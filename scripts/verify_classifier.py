@@ -8,7 +8,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'src'))
 from birdid.config import load_config
 from birdid.runtime import build_runtime
 from birdid.classifier import SpeciesRegistry
-from birdid.detector import decode_predictions, pick_targets, BIRD_CLASS_ID
+from birdid.detector import decode_predictions, pick_targets
 from birdid.preprocess import letterbox, crop_with_margin, resize_for_classifier
 
 def logits_of(rt, img):
@@ -33,12 +33,12 @@ def main():
     raw = seg.infer(lb.image)[0]
     dets = decode_predictions(np.asarray(raw), lb, img.size, cfg.npu.seg_conf_threshold,
                               cfg.npu.seg_iou_threshold, cfg.npu.max_detections)
-    targets = pick_targets(dets, BIRD_CLASS_ID)
-    print('dets=%d birds=%d' % (len(dets), len(targets)))
-    if not targets:
+    birds, others = pick_targets(dets, cfg.npu.max_detections)
+    print('dets=%d birds=%d others=%d' % (len(dets), len(birds), len(others)))
+    if not birds:
         print('NO_BIRD')
         return 1
-    box = list(targets[0].box)
+    box = list(birds[0].box)
     crop = crop_with_margin(img, box, cfg.npu.crop_margin_ratio)
     cls_in = resize_for_classifier(crop, cfg.npu.cls_input_size)
     npu = build_runtime(model_dir, cfg.npu.cls_model, cfg.npu.cls_onnx, cfg.npu.device_id)
@@ -48,8 +48,8 @@ def main():
     lc = logits_of(cpu, cls_in)
     tn, tc = topk(ln), topk(lc)
     same = all(a[0] == b[0] for a, b in zip(tn, tc))
-    print('npu_top5=%s' % [(reg.lookup(i).species_name, round(v, 3)) for i, v in tn])
-    print('cpu_top5=%s' % [(reg.lookup(i).species_name, round(v, 3)) for i, v in tc])
+    print('npu_top5=%s' % [(reg.lookup(i)[1], round(v, 3)) for i, v in tn])
+    print('cpu_top5=%s' % [(reg.lookup(i)[1], round(v, 3)) for i, v in tc])
     print('top1_match=%s all5_match=%s' % (tn[0][0] == tc[0][0], same))
     print('max_abs_diff=%.4f' % float(np.max(np.abs(ln - lc))))
     for name, rt in (('npu', npu), ('cpu', cpu)):

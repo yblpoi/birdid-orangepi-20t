@@ -36,31 +36,91 @@ class SoundResult:
 
 
 class BirdNetModel:
-    """BirdNET 声学模型封装，按可用性选择 NPU（.om）或 CPU（.onnx）后端。"""
+    """BirdNET 声学模型封装。
 
-    def __init__(self, onnx_path: Path, backend: str = "cpu", om_path: Path | None = None) -> None:
-        self.backend = backend
+    BirdNET v3 的 ONNX 图前端是 STFT + ReduceL2，昇腾 CANN 未提供这两种算子
+    插件，整图无法转 .om。因此按 mel 特征边界把图切成两段：
+
+      * 前端 wave -> mel（STFT/ReduceL2，10 个节点）留在 CPU 用 onnxruntime，
+        单窗口约 14 ms；
+      * 后端 mel -> 11,560 类 logits（CNN 主干，653 个节点）转成 .om 跑 NPU。
+
+    两段拼接与整图推理逐元素一致（CPU 上实测 max abs diff = 0.0），而 CNN 主干
+    单窗口从 91.5 ms（CPU）降到 12.4 ms（NPU）。
+    """
+
+    def __init__(
+        self,
+        onnx_path: Path,
+        backend: str = "cpu",
+        om_path: Path | None = None,
+        front_onnx: Path | None = None,
+    ) -> None:
+        self.backend = "cpu"
         self._session = None
         self._acl_model = None
-        if backend == "npu" and om_path is not None and om_path.exists():
+        self._front = None
+        self._front_input = ""
+        self._back_shape: tuple[int, ...] = ()
+        import onnxruntime as ort
+
+        options = ort.SessionOptions()
+        options.intra_op_num_threads = 2
+        want_npu = backend == "npu"
+        hybrid = (
+            want_npu
+            and front_onnx is not None
+            and front_onnx.exists()
+            and om_path is not None
+            and om_path.exists()
+        )
+        if hybrid:
+            from .acl_runner import AclModel
+
+            self._front = ort.InferenceSession(
+                str(front_onnx), options, providers=["CPUExecutionProvider"]
+            )
+            self._front_input = self._front.get_inputs()[0].name
+            self._acl_model = AclModel(om_path)
+            self._back_shape = tuple(int(d) for d in self._acl_model.inputs[0].shape)
+            self.backend = "hybrid-front-cpu-back-npu"
+            LOGGER.info(
+                "BirdNET 混合后端：mel 前端 %s 走 CPU，CNN 主干 %s 走 NPU",
+                front_onnx.name,
+                om_path.name,
+            )
+        elif want_npu and om_path is not None and om_path.exists():
+            # 兼容整图 .om（保留给未来 CANN 支持 STFT 时使用）
             from .acl_runner import AclModel
 
             self._acl_model = AclModel(om_path)
             self.backend = "npu"
         else:
-            if backend == "npu":
-                LOGGER.warning("未找到 %s，BirdNET 回退 CPU（推理会明显变慢）", om_path)
-            import onnxruntime as ort
-
-            options = ort.SessionOptions()
-            options.intra_op_num_threads = 2
+            if want_npu:
+                LOGGER.warning(
+                    "未找到 %s / %s，BirdNET 回退 CPU（推理会明显变慢）", front_onnx, om_path
+                )
             self._session = ort.InferenceSession(
                 str(onnx_path), options, providers=["CPUExecutionProvider"]
             )
             self.backend = "cpu"
 
+    def _mel(self, samples: np.ndarray) -> np.ndarray:
+        """计算单窗口 mel 特征，输出形状 (框架数, 128)。"""
+        feed = np.ascontiguousarray(samples[None, :], dtype=np.float32)
+        mel = self._front.run(None, {self._front_input: feed})[0]
+        return np.asarray(mel, dtype=np.float32)
+
     def scores(self, samples: np.ndarray) -> np.ndarray:
         """对单个 3 秒窗口返回类别概率向量（模型内已含 sigmoid）。"""
+        if self._front is not None and self._acl_model is not None:
+            mel = self._mel(samples)
+            if len(self._back_shape) == 2:
+                feed = mel.reshape(self._back_shape)
+            else:
+                feed = mel.reshape((1,) + self._back_shape)
+            output = self._acl_model.infer(np.ascontiguousarray(feed, dtype=np.float32))[0]
+            return np.asarray(output, dtype=np.float32).reshape(-1)
         feed = np.ascontiguousarray(samples[None, :], dtype=np.float32)
         if self._acl_model is not None:
             output = self._acl_model.infer(feed)[0]
@@ -75,6 +135,7 @@ class BirdNetModel:
             self._acl_model.close()
             self._acl_model = None
         self._session = None
+        self._front = None
 
 
 class SoundPipeline:
@@ -89,6 +150,7 @@ class SoundPipeline:
             model_dir / sound.birdnet_model,
             sound.birdnet_backend,
             model_dir / sound.birdnet_om,
+            model_dir / sound.birdnet_front_onnx,
         )
         # GeoModel 有自己的分类体系与标签表，不能复用 BirdNET 的标签。
         self._geo_labels = LabelTable(config.resolve(sound.geomodel_labels_file))

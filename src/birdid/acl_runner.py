@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -38,6 +39,38 @@ _DTYPE_MAP = {
 ACL_MEM_MALLOC_HUGE_FIRST = 0
 ACL_MEMCPY_HOST_TO_DEVICE = 1
 ACL_MEMCPY_DEVICE_TO_HOST = 2
+
+
+ACL_REPEAT_INITIALIZE = 100002
+_ACL_STATE_LOCK = threading.Lock()
+_ACL_INIT_REFS = 0
+
+
+def _acquire_acl(acl) -> None:
+    """按引用计数初始化 ACL；重复初始化（100002）视为成功。"""
+    global _ACL_INIT_REFS
+    with _ACL_STATE_LOCK:
+        ret = acl.init()
+        if ret not in (0, ACL_REPEAT_INITIALIZE):
+            raise RuntimeError(f"ACL 调用失败: acl.init 返回 {ret}")
+        _ACL_INIT_REFS += 1
+
+
+def _release_acl(acl, device_id: int) -> None:
+    """释放一次 ACL 初始化引用；归零时复位设备并 finalize。"""
+    global _ACL_INIT_REFS
+    with _ACL_STATE_LOCK:
+        _ACL_INIT_REFS = max(0, _ACL_INIT_REFS - 1)
+        if _ACL_INIT_REFS:
+            return
+        try:
+            acl.rt.reset_device(device_id)
+        except Exception:  # pragma: no cover - 释放阶段尽量不抛
+            LOGGER.debug("reset_device 失败，忽略", exc_info=True)
+        try:
+            acl.finalize()
+        except Exception:  # pragma: no cover - 释放阶段尽量不抛
+            LOGGER.debug("acl.finalize 失败，忽略", exc_info=True)
 
 
 def _check(ret: int, what: str) -> None:
@@ -99,7 +132,8 @@ class AclModel:
 
     def _init_runtime(self) -> None:
         acl = self._acl
-        _check(acl.init(), "acl.init")
+        _acquire_acl(acl)
+        self._holds_init = True
         _check(acl.rt.set_device(self.device_id), "acl.rt.set_device")
         # 复用已有 context；没有则创建并由本对象负责销毁
         context, ret = acl.rt.get_context()
@@ -151,10 +185,23 @@ class AclModel:
             )
         return specs
 
+    def _bind_context(self) -> None:
+        """把 ACL context 绑定到当前线程。
+
+        ACL 的 context 是线程绑定的：模型在主线程加载，推理却在线程池的
+        工作线程执行，未绑定时 malloc/execute 会返回 107002（context 为空）。
+        """
+        acl = self._acl
+        if acl.rt.get_context()[0]:
+            return
+        acl.rt.set_device(self.device_id)
+        _check(acl.rt.set_context(self._context), "acl.rt.set_context")
+
     # ---------- 推理 ----------
 
     def infer(self, feed: np.ndarray) -> list[np.ndarray]:
         """执行一次前向。feed 为输入张量（单输入模型）或输入列表。"""
+        self._bind_context()
         feeds = [feed] if isinstance(feed, np.ndarray) else list(feed)
         if len(feeds) != len(self.inputs):
             raise ValueError(f"输入数量不匹配: 需要 {len(self.inputs)}，实际 {len(feeds)}")
@@ -229,10 +276,9 @@ class AclModel:
         if self._context is not None and self._owns_context:
             acl.rt.destroy_context(self._context)
         self._context = None
-        try:
-            acl.rt.reset_device(self.device_id)
-        except Exception:  # pragma: no cover - 释放阶段尽量不抛
-            LOGGER.debug("reset_device 失败，忽略", exc_info=True)
+        if getattr(self, "_holds_init", False):
+            self._holds_init = False
+            _release_acl(acl, self.device_id)
 
     def __enter__(self) -> "AclModel":
         return self

@@ -27,16 +27,18 @@ class Runtime(Protocol):
         """释放资源。"""
 
 
-def build_runtime(model_dir: Path, om_name: str, onnx_name: str, device_id: int = 0) -> Runtime:
+def build_runtime(
+    model_dir: Path, om_name: str | None, onnx_name: str | None, device_id: int = 0
+) -> Runtime:
     """按优先级构造后端：有 .om 用 ACL，否则回退 ONNX Runtime。"""
-    om_path = model_dir / om_name
-    if om_path.exists():
+    om_path = model_dir / om_name if om_name else None
+    if om_path is not None and om_path.exists():
         from .acl_runner import AclModel
 
         LOGGER.info("使用 ACL 后端: %s", om_path)
         return _AclRuntime(AclModel(om_path, device_id))
-    onnx_path = model_dir / onnx_name
-    if onnx_path.exists():
+    onnx_path = model_dir / onnx_name if onnx_name else None
+    if onnx_path is not None and onnx_path.exists():
         LOGGER.warning("未找到 %s，回退 ONNX Runtime（仅用于功能验证）: %s", om_name, onnx_path)
         return _OnnxRuntime(onnx_path)
     raise FileNotFoundError(f"模型缺失：{om_path} 与 {onnx_path} 都不存在")

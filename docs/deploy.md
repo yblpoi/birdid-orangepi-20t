@@ -33,21 +33,60 @@ python scripts/export_yolo.py --weights yolo26m-seg.pt --output models/yolo26m-s
 
 ## 4. 转 OM 模型（NPU 推理用）
 
+三个模型各有各的坑，按顺序执行即可。转换前先确认：
+
+```bash
+export TE_PARALLEL_COMPILER=4   # 板子 4 核，默认 8 路并行会把内存打爆导致 ATC 假死
+source /usr/local/Ascend/cann-9.2.1/set_env.sh
+```
+
+### 4.1 YOLO26-seg
+
 ```bash
 scripts/convert_om.sh models/yolo26m-seg.onnx models/yolo26m-seg \
     --input_shape 'images:1,3,640,640'
-scripts/convert_om.sh models/birdtrace.model.onnx models/fastvit \
-    --input_shape 'image:1,3,384,384'
-scripts/convert_om.sh models/birdnet_v3_fp16.onnx models/birdnet_v3_fp16 \
-    --input_shape 'input:1,96000'
 ```
 
-BirdTrace 的原始 ONNX 需要先做图修复，否则 ATC 会因 4D bias 的 Conv 报
-`input bias shape should be 1D or 4D`：
+### 4.2 BirdTrace FastViT-MA36
+
+原始 ONNX 需先做图修复，否则 ATC 先报
+`input bias shape should be 1D or 4D`（36 个 Conv 的 bias 来自 Expand 子图），
+再报 `No supported Ops kernel ... StridedSliceV3`（18 个 k:k+1 的 Slice）：
 
 ```bash
 python scripts/repair_birdtrace_onnx.py models/birdtrace_raw.onnx models/birdtrace.model.onnx
 ```
+
+修完还要用 onnxsim 把动态 shape 折叠成静态，否则 OM 能转出来但
+`acl.mdl.load_from_file` 返回 500002（GE 的 init graph 在 310B1 上推出垃圾维度）：
+
+```bash
+python -c "import onnx, onnxsim; m = onnx.load('models/birdtrace.model.onnx'); \
+  s, ok = onnxsim.simplify(m, overwrite_input_shapes={'image': [1,3,384,384]}, \
+  dynamic_input_shape=False, perform_optimization=True); onnx.save(s, 'models/fastvit_sim.onnx')"
+scripts/convert_om.sh models/fastvit_sim.onnx models/fastvit_sim --input_shape 'image:1,3,384,384'
+```
+
+### 4.3 BirdNET v3
+
+BirdNET 整图**不能**直接转：310B1 没有 `STFT` 与 `ReduceL2` 的 ONNX 算子插件
+（`Not_Supported_Operator(E13010)`）。做法是把 mel 之前的 STFT 前端留在 CPU：
+
+```bash
+python scripts/split_birdnet.py --input models/birdnet_v3_fp16.onnx \
+    --front-out models/birdnet_v3_fp16_front.onnx \
+    --back-out models/birdnet_v3_fp16_back.onnx
+python -c "import onnx; m = onnx.load('models/birdnet_v3_fp16_back.onnx'); \
+  m.ir_version = 7; onnx.save(m, 'models/birdnet_v3_fp16_back_ir7.onnx')"
+scripts/convert_om.sh models/birdnet_v3_fp16_back_ir7.onnx models/birdnet_v3_fp16_back \
+    --input_shape 'node_mm_output_cast_0:188,128'
+```
+
+`ir_version` 必须降到 7，否则 ATC 解析 `ir 10 / opset 18` 的切片会报
+`E19999: Internal error!`；opset 也不要降到 11（`Reshape` 的 `allowzero` 属性不被识别）。
+
+服务会自动识别：`models/` 下有 `birdnet_v3_fp16_back.om` 与 `birdnet_v3_fp16_front.onnx`
+就走混合后端（CPU mel + NPU 主干），否则整体回退 CPU。
 
 ## 5. 启动服务
 

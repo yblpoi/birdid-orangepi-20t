@@ -122,6 +122,7 @@ def client(monkeypatch, tmp_path):
                 "  model_dir: models",
                 "  birdnet_model: birdnet.onnx",
                 "  birdnet_om: birdnet.om",
+                "  birdnet_front_onnx: birdnet_front.onnx",
                 "  geomodel_model: geo.onnx",
                 "  birdnet_backend: cpu",
                 "  geomodel_backend: cpu",

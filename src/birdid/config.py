@@ -65,6 +65,7 @@ class SoundConfig:
     model_dir: str
     birdnet_model: str
     birdnet_om: str
+    birdnet_front_onnx: str
     geomodel_model: str
     birdnet_backend: str
     geomodel_backend: str

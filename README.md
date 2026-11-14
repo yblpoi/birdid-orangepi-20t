@@ -28,17 +28,21 @@ tests/    单元与 HTTP 层测试
 docs/     协议、模型、部署文档
 ```
 
-## 实测性能（310B1，单张 640x640）
+## 实测性能（310B1，单次推理）
 
-| 环节 | NPU | CPU |
-| --- | --- | --- |
-| YOLO26m-seg 检测 | 46.6 ms | 4577 ms |
+| 环节 | 输入 | NPU | 同板 CPU | 加速比 |
+| --- | --- | --- | --- | --- |
+| YOLO26m-seg 检测 | 1x3x640x640 | 46.6 ms | 4577 ms | 98x |
+| BirdTrace FastViT-MA36 分类 | 1x3x384x384 | 25.7 ms | 1933.9 ms | 75x |
+| BirdNET 主干（mel 之后） | 188x128 | 12.5 ms | 91.5 ms | 7.3x |
+| BirdNET 混合链路（含 CPU mel 前端） | 3 s 音频 | 35.9 ms | 105.4 ms | 2.9x |
 
-BirdTrace / BirdNET 的 NPU 转换与对齐结果见 `docs/models.md`。
+精度对齐：BirdTrace 的 NPU 与 CPU logits 最大绝对差 0.2357（logits 量级 -50~-60），top1 与 top5 完全一致；
+BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分值偏移（详见 `docs/models.md`）。
 
 ## 状态
 
-图像与声音链路均已跑通；正在完成 BirdTrace 分类模型的全量 OM 转换与 NPU 精度对齐。
+图像与声音链路均已端到端跑通：YOLO26m-seg 与 BirdTrace 全量走 NPU；BirdNET 采用「CPU mel 前端 + NPU CNN 主干」混合后端；GeoModel 走 CPU。
 
 ## 许可证
 
