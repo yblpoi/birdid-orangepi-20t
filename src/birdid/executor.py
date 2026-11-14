@@ -41,7 +41,8 @@ class TaskExecutor:
 
     def __init__(self, store: ResultStore, max_workers: int = 2, ttl_seconds: int = 1800) -> None:
         self._store = store
-        self._ttl = ttl_seconds
+        # 结果存活时间由 ResultStore 自己管理，这里保留参数只为接口稳定。
+        del ttl_seconds
         self._pool = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="birdid")
         self._lock = threading.Lock()
 
@@ -54,7 +55,7 @@ class TaskExecutor:
     ) -> str:
         """受理任务，返回 resultid；work 在后台线程执行。"""
         result_id = build_result_id(class_code)
-        self._store.put(result_id, {"state": "processing", "kind": kind}, ttl_seconds=self._ttl)
+        self._store.put(result_id, {"state": "processing", "kind": kind})
         with self._lock:
             self._pool.submit(self._run, result_id, kind, work, accepted_payload)
         return result_id
@@ -78,7 +79,7 @@ class TaskExecutor:
         except Exception as exc:  # noqa: BLE001
             LOGGER.exception("任务失败 resultid=%s", result_id)
             record = {"state": "failed", "kind": kind, "error": str(exc), "payload": no_animals()}
-        self._store.put(result_id, record, ttl_seconds=self._ttl)
+        self._store.put(result_id, record)
 
     def get(self, result_id: str) -> dict[str, Any] | None:
         """读取任务结果。"""

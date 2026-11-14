@@ -4,7 +4,14 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CANNN_SET_ENV="${CANNN_SET_ENV:-/usr/local/Ascend/cann-9.2.1/set_env.sh}"
-PYTHON_BIN="${PYTHON_BIN:-python3}"
+# 优先使用仓库内的虚拟环境，其次回退到 PATH 上的 python3。
+if [ -z "${PYTHON_BIN:-}" ]; then
+  if [ -x "$REPO_ROOT/.venv/bin/python" ]; then
+    PYTHON_BIN="$REPO_ROOT/.venv/bin/python"
+  else
+    PYTHON_BIN="python3"
+  fi
+fi
 CONFIG="${BIRDID_CONFIG:-$REPO_ROOT/configs/default.yaml}"
 
 if [ -f "$CANNN_SET_ENV" ]; then
