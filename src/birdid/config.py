@@ -74,7 +74,8 @@ class SoundConfig:
     min_confidence: float
     geomodel_threshold: float
     labels_file: str
-    species_map_file: str
+    geomodel_labels_file: str
+
 
 
 @dataclass(frozen=True)

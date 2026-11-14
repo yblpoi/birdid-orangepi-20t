@@ -47,7 +47,6 @@ sound:
   geomodel_threshold: 0.03
   labels_file: models/birdnet_v3_labels.csv
   geomodel_labels_file: models/geomodel_v3_labels.txt
-  species_map_file: models/species_map.json
 
 logging:
   level: INFO
