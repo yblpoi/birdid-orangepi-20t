@@ -121,6 +121,7 @@ def client(monkeypatch, tmp_path):
                 "sound:",
                 "  model_dir: models",
                 "  birdnet_model: birdnet.onnx",
+                "  birdnet_om: birdnet.om",
                 "  geomodel_model: geo.onnx",
                 "  birdnet_backend: cpu",
                 "  geomodel_backend: cpu",

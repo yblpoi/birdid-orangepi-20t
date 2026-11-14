@@ -8,6 +8,7 @@ BirdNET 输入是 3 秒 32 kHz 单声道波形，输出 11,560 类概率；GeoMo
 from __future__ import annotations
 
 import io
+import logging
 import wave
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,8 @@ from .sound import GeoModelFilter, LabelTable, read_wav, resample, split_windows
 
 BIRDNET_SEGMENT_SECONDS = 3.0
 BIRDNET_SAMPLE_RATE = 32000
+
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass
@@ -32,39 +35,46 @@ class SoundResult:
     geo_score: float
 
 
-class OnnxBirdNet:
-    """BirdNET 声学模型的 ONNX 封装（CPU 或 NPU 后端统一接口）。"""
+class BirdNetModel:
+    """BirdNET 声学模型封装，按可用性选择 NPU（.om）或 CPU（.onnx）后端。"""
 
-    def __init__(self, model_path: Path, backend: str = "cpu") -> None:
+    def __init__(self, onnx_path: Path, backend: str = "cpu", om_path: Path | None = None) -> None:
         self.backend = backend
         self._session = None
-        if backend == "cpu":
+        self._acl_model = None
+        if backend == "npu" and om_path is not None and om_path.exists():
+            from .acl_runner import AclModel
+
+            self._acl_model = AclModel(om_path)
+            self.backend = "npu"
+        else:
+            if backend == "npu":
+                LOGGER.warning("未找到 %s，BirdNET 回退 CPU（推理会明显变慢）", om_path)
             import onnxruntime as ort
 
             options = ort.SessionOptions()
             options.intra_op_num_threads = 2
             self._session = ort.InferenceSession(
-                str(model_path), options, providers=["CPUExecutionProvider"]
+                str(onnx_path), options, providers=["CPUExecutionProvider"]
             )
-        else:
-            from .acl_runner import AclModel
-
-            self._acl_model = AclModel(model_path)
+            self.backend = "cpu"
 
     def scores(self, samples: np.ndarray) -> np.ndarray:
-        """对单个 3 秒窗口返回类别概率向量。"""
+        """对单个 3 秒窗口返回类别概率向量（模型内已含 sigmoid）。"""
         feed = np.ascontiguousarray(samples[None, :], dtype=np.float32)
-        if self._session is not None:
+        if self._acl_model is not None:
+            output = self._acl_model.infer(feed)[0]
+        else:
             name = self._session.get_inputs()[0].name
             output = self._session.run(None, {name: feed})[0]
-        else:
-            output = self._acl_model.infer(feed)[0]
-        vector = np.asarray(output, dtype=np.float32).reshape(-1)
-        return vector
+        return np.asarray(output, dtype=np.float32).reshape(-1)
 
     def close(self) -> None:
-        if self._session is None and getattr(self, "_acl_model", None) is not None:
+        """释放后端资源。"""
+        if self._acl_model is not None:
             self._acl_model.close()
+            self._acl_model = None
+        self._session = None
 
 
 class SoundPipeline:
@@ -75,7 +85,11 @@ class SoundPipeline:
         sound = config.sound
         model_dir = config.resolve(sound.model_dir)
         self._labels = LabelTable(config.resolve(sound.labels_file))
-        self._birdnet = OnnxBirdNet(model_dir / sound.birdnet_model, sound.birdnet_backend)
+        self._birdnet = BirdNetModel(
+            model_dir / sound.birdnet_model,
+            sound.birdnet_backend,
+            model_dir / sound.birdnet_om,
+        )
         # GeoModel 有自己的分类体系与标签表，不能复用 BirdNET 的标签。
         self._geo_labels = LabelTable(config.resolve(sound.geomodel_labels_file))
         self._geo = GeoModelFilter(

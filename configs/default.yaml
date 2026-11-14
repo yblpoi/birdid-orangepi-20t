@@ -36,6 +36,7 @@ npu:
 sound:
   model_dir: models
   birdnet_model: birdnet_v3_fp16.onnx
+  birdnet_om: birdnet_v3_fp16.om   # 转换产物，缺失时自动回退 CPU
   geomodel_model: geomodel_v3_fp32.onnx
   birdnet_backend: npu            # npu | cpu（npu 需先转 .om）
   geomodel_backend: cpu           # cpu（默认） | npu

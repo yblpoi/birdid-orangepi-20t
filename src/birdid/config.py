@@ -64,6 +64,7 @@ class NpuConfig:
 class SoundConfig:
     model_dir: str
     birdnet_model: str
+    birdnet_om: str
     geomodel_model: str
     birdnet_backend: str
     geomodel_backend: str
