@@ -132,11 +132,11 @@ class AclModel:
         for index in range(count):
             if is_input:
                 raw_shape, ret = acl.mdl.get_input_dims(self._desc, index)
-                raw_name, _ = acl.mdl.get_input_name_by_index(self._desc, index)
+                raw_name = acl.mdl.get_input_name_by_index(self._desc, index)
                 code = acl.mdl.get_input_data_type(self._desc, index)
             else:
                 raw_shape, ret = acl.mdl.get_output_dims(self._desc, index)
-                raw_name, _ = acl.mdl.get_output_name_by_index(self._desc, index)
+                raw_name = acl.mdl.get_output_name_by_index(self._desc, index)
                 code = acl.mdl.get_output_data_type(self._desc, index)
             _check(ret, "acl.mdl.get_dims")
             dims = tuple(int(d) for d in raw_shape.get("dims", []) if int(d) > 0)

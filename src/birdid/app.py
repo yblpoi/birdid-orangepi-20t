@@ -12,6 +12,7 @@ import os
 import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
+from datetime import date
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -36,7 +37,8 @@ from .protocol import (
     ok,
     processing,
 )
-from .sound import SoundPipeline
+from .sound import WEEKS_IN_YEAR
+from .sound_pipeline import SoundPipeline
 from .store import build_store
 
 LOGGER = logging.getLogger("birdid")
@@ -212,13 +214,14 @@ def _accept_image_task(state: AppState, raw: bytes, class_code: str) -> list[Any
 
 def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
     """鸟鸣识别分支。"""
+    geo = _parse_geo(form)
     if "sound" in form:
         raw = form["sound"]
         if not isinstance(raw, bytes) or not raw:
             return error(CODE_PROCESSING, "empty sound")
         if len(raw) > state.config.server.max_upload_sound_mb * 1024 * 1024:
             return error(CODE_PROCESSING, "sound too large")
-        return processing(state.executor.submit("sound", "B", lambda: _run_sound(state, raw)))
+        return processing(state.executor.submit("sound", "B", lambda: _run_sound(state, raw, geo)))
     url = _text(form.get("sound_url"))
     if not url:
         return error(CODE_PROCESSING, MSG_SOUND_URL_ERROR)
@@ -228,7 +231,7 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
             data = _download(url, HTTP_TIMEOUT_SOUND)
         except Exception:  # noqa: BLE001
             return MSG_SOUND_URL_ERROR
-        return _run_sound(state, data)
+        return _run_sound(state, data, geo)
 
     return processing(state.executor.submit("sound", "B", work))
 
@@ -242,14 +245,42 @@ def _run_image(state: AppState, raw: bytes) -> Any:
     longest = max(width, height)
     shortest = min(width, height)
     if longest > server.max_image_side or shortest < server.min_image_side:
-        return []
+        # 懂鸟规范要求边长 11..8192 像素；越界按无有效动物处理。
+        return None
     result = state.image_pipeline.predict(image)
     return result.entries or None
 
 
-def _run_sound(state: AppState, raw: bytes) -> Any:
-    """执行鸟鸣识别。"""
-    return state.sound_pipeline.predict(raw)
+def _parse_geo(form: dict[str, Any]) -> tuple[float | None, float | None, int | None]:
+    """解析可选的地理/季节过滤参数（懂鸟规范之外的扩展字段）。"""
+    try:
+        lat = float(_text(form.get("latitude"))) if form.get("latitude") is not None else None
+        lon = float(_text(form.get("longitude"))) if form.get("longitude") is not None else None
+    except (TypeError, ValueError):
+        return None, None, None
+    if lat is None or lon is None:
+        return None, None, None
+    if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
+        return None, None, None
+    week_text = _text(form.get("week"))
+    if week_text:
+        try:
+            week = int(float(week_text))
+        except ValueError:
+            week = date.today().timetuple().tm_yday * WEEKS_IN_YEAR // 366 + 1
+    else:
+        week = date.today().timetuple().tm_yday * WEEKS_IN_YEAR // 366 + 1
+    return lat, lon, min(WEEKS_IN_YEAR, max(1, week))
+
+
+def _run_sound(
+    state: AppState,
+    raw: bytes,
+    geo: tuple[float | None, float | None, int | None] = (None, None, None),
+) -> Any:
+    """执行鸟鸣识别，可选叠加地理/季节过滤。"""
+    latitude, longitude, week = geo
+    return state.sound_pipeline.predict(raw, latitude, longitude, week)
 
 
 def _valid_image_size(state: AppState, raw: bytes) -> bool:

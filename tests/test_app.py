@@ -1,0 +1,218 @@
+"""HTTP 层测试：用替身 AppState 验证协议分支，不加载真实模型。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from birdid import app as app_module
+from birdid.protocol import CODE_NO_ANIMALS, CODE_OK, CODE_PROCESSING, CODE_QUOTA
+
+
+class _StubExecutor:
+    """替身任务执行器：同步跑完，返回固定 resultid。"""
+
+    def __init__(self) -> None:
+        self.payloads: dict[str, Any] = {}
+        self.call_count = 0
+
+    def submit(self, kind: str, class_code: str, work, accepted_payload: Any = None) -> str:
+        del kind, class_code, accepted_payload
+        self.call_count += 1
+        outcome = work()
+        result_id = f"HH-B_test_{self.call_count}"
+        self.payloads[result_id] = outcome
+        return result_id
+
+    def get(self, result_id: str) -> dict | None:
+        if result_id not in self.payloads:
+            return None
+        outcome = self.payloads[result_id]
+        payload = [CODE_NO_ANIMALS, "No animals"] if outcome is None else [CODE_OK, outcome]
+        return {"state": "done", "payload": payload}
+
+    def shutdown(self) -> None:
+        return None
+
+
+class _StubImagePipeline:
+    def __init__(self) -> None:
+        self.seen: list[Any] = []
+
+    def predict(self, image):
+        self.seen.append(image.size)
+
+        class _Result:
+            entries = [
+                {
+                    "box": [1, 2, 3, 4],
+                    "list": [[99.9, "Turdus merula|Eurasian Blackbird|Turdus merula", 7, "B"]],
+                }
+            ]
+
+        return _Result()
+
+    def close(self) -> None:
+        return None
+
+
+class _StubSoundPipeline:
+    def __init__(self) -> None:
+        self.calls: list[tuple] = []
+
+    def predict(self, raw, latitude=None, longitude=None, week=None):
+        self.calls.append((len(raw), latitude, longitude, week))
+        return [{"box": [], "list": [[88.0, "Turdus merula|Eurasian Blackbird|Turdus merula", 3, "B"]]}]
+
+    def close(self) -> None:
+        return None
+
+
+class _StubState:
+    def __init__(self, config) -> None:
+        self.config = config
+        self.executor = _StubExecutor()
+        self.image_pipeline = _StubImagePipeline()
+        self.sound_pipeline = _StubSoundPipeline()
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.fixture()
+def client(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_module, "AppState", _StubState)
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "server:",
+                "  host: 127.0.0.1",
+                "  port: 8080",
+                "  workers: 1",
+                "  max_upload_image_mb: 2",
+                "  max_upload_sound_mb: 5",
+                "  max_image_side: 8192",
+                "  min_image_side: 11",
+                "auth:",
+                "  api_key_env: BIRDID_TEST_KEY",
+                "  header_name: api_key",
+                "  form_field: api_key",
+                "storage:",
+                "  result_ttl_seconds: 60",
+                "  backend: memory",
+                "  sqlite_path: data/test.db",
+                "npu:",
+                "  device_id: 0",
+                "  model_dir: models",
+                "  seg_model: seg.om",
+                "  cls_model: cls.om",
+                "  seg_onnx: seg.onnx",
+                "  cls_onnx: cls.onnx",
+                "  classes_file: models/classes.json",
+                "  seg_input_size: 640",
+                "  cls_input_size: 384",
+                "  seg_conf_threshold: 0.25",
+                "  seg_iou_threshold: 0.45",
+                "  crop_margin_ratio: 0.08",
+                "  max_detections: 5",
+                "sound:",
+                "  model_dir: models",
+                "  birdnet_model: birdnet.onnx",
+                "  geomodel_model: geo.onnx",
+                "  birdnet_backend: cpu",
+                "  geomodel_backend: cpu",
+                "  sample_rate: 32000",
+                "  window_seconds: 3.0",
+                "  overlap: 0.0",
+                "  top_k: 3",
+                "  min_confidence: 0.1",
+                "  geomodel_threshold: 0.03",
+                "  labels_file: models/labels.csv",
+                "  geomodel_labels_file: models/geo.txt",
+                "logging:",
+                "  level: INFO",
+                "  access_log: false",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    with TestClient(app_module.create_app(str(config_path))) as test_client:
+        yield test_client
+
+
+def test_healthz(client: TestClient) -> None:
+    response = client.get("/healthz")
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+
+
+def test_quota(client: TestClient) -> None:
+    code, payload = client.post("/dongniao", data={"quota": "1"}).json()
+    assert code == CODE_OK
+    assert payload["image"] > 0
+
+
+def test_missing_parameters(client: TestClient) -> None:
+    code, _ = client.post("/dongniao", data={}).json()
+    assert code == CODE_PROCESSING
+
+
+def test_unknown_result_id_is_processing(client: TestClient) -> None:
+    body = client.post("/dongniao", data={"resultid": "nope"}).json()
+    assert body == [CODE_PROCESSING, "nope"]
+
+
+def test_image_upload_returns_result_id(client: TestClient) -> None:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), color=(10, 20, 30)).save(buffer, format="JPEG")
+    code, result_id = client.post(
+        "/dongniao",
+        data={"upload": "1"},
+        files={"image": ("bird.jpg", buffer.getvalue(), "image/jpeg")},
+    ).json()
+    assert code == CODE_PROCESSING
+    code, payload = client.post("/dongniao", data={"resultid": result_id}).json()
+    assert code == CODE_OK
+    assert payload[0]["list"][0][3] == "B"
+
+
+def test_image_too_small_is_no_animals(client: TestClient) -> None:
+    import io
+
+    from PIL import Image
+
+    buffer = io.BytesIO()
+    Image.new("RGB", (8, 8)).save(buffer, format="PNG")
+    result_id = client.post(
+        "/dongniao",
+        files={"image": ("tiny.png", buffer.getvalue(), "image/png")},
+    ).json()[1]
+    code, payload = client.post("/dongniao", data={"resultid": result_id}).json()
+    assert [code, payload] == [CODE_NO_ANIMALS, "No animals"]
+
+
+def test_sound_geo_parameters_forwarded(client: TestClient) -> None:
+    state = client.app.state.birdid
+    buffer = b"RIFF" + b"\x00" * 64
+    client.post(
+        "/dongniao",
+        data={"latitude": "39.9", "longitude": "116.4"},
+        files={"sound": ("a.wav", buffer, "audio/wav")},
+    )
+    assert state.sound_pipeline.calls[0][1] == 39.9
+    assert state.sound_pipeline.calls[0][3] == 42
+
+
+def test_api_key_enforced(monkeypatch, client: TestClient) -> None:
+    monkeypatch.setenv("BIRDID_TEST_KEY", "secret")
+    code, _ = client.post("/dongniao", data={"quota": "1"}).json()
+    assert code == CODE_QUOTA
+    code, _ = client.post("/dongniao", data={"quota": "1"}, headers={"api_key": "secret"}).json()
+    assert code == CODE_OK

@@ -76,9 +76,11 @@ class SoundPipeline:
         model_dir = config.resolve(sound.model_dir)
         self._labels = LabelTable(config.resolve(sound.labels_file))
         self._birdnet = OnnxBirdNet(model_dir / sound.birdnet_model, sound.birdnet_backend)
+        # GeoModel 有自己的分类体系与标签表，不能复用 BirdNET 的标签。
+        self._geo_labels = LabelTable(config.resolve(sound.geomodel_labels_file))
         self._geo = GeoModelFilter(
             model_dir / sound.geomodel_model,
-            self._labels,
+            self._geo_labels,
             backend=sound.geomodel_backend,
         )
 
@@ -119,12 +121,17 @@ class SoundPipeline:
         if not best:
             return None
 
-        scored = sorted(best.items(), key=lambda item: -item[1])[: self._config.sound.top_k]
-        if latitude is not None and longitude is not None and week is not None:
-            ranked = self._geo.apply(scored, latitude, longitude, week)
-        else:
-            ranked = [(code, score, 1.0) for code, score in scored]
         by_code = self._labels.by_code()
+        scored = sorted(best.items(), key=lambda item: -item[1])[: self._config.sound.top_k * 3]
+        candidates = [
+            (code, by_code[code].scientific_name, score)
+            for code, score in scored
+            if code in by_code
+        ]
+        if latitude is not None and longitude is not None and week is not None:
+            ranked = self._geo.rank(candidates, latitude, longitude, week)
+        else:
+            ranked = [(code, score, -1.0) for code, _, score in candidates]
         entries: list[list[Any]] = []
         for code, confidence, geo_score in ranked[: self._config.sound.top_k]:
             label = by_code.get(code)

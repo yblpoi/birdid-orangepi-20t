@@ -45,3 +45,24 @@
 识别到鸟类时裁剪并送入分类器；整图未检出鸟类时，返回检测到的具体类别与置信度，例如
 `[1000, [{"box": [...], "list": [[99, "狗|Dog|Canis lupus familiaris", 0, "M"]]}]]`，
 完全无动物时返回 `[1010, "No animals"]`。
+
+## 扩展字段（非懂鸟规范）
+
+声音识别支持可选的 `latitude` / `longitude` / `week` 表单字段，用于叠加 GeoModel 地理与季节过滤：
+
+- `latitude`：-90 ~ 90，缺失或非法则跳过地理过滤；
+- `longitude`：-180 ~ 180，与 `latitude` 同时生效；
+- `week`：1 ~ 48（缺省按当天换算），非法值按当天换算。
+
+BirdNET 与 GeoModel 的分类体系不同（11,560 类 / 14,082 类），服务按**学名**关联两者，
+GeoModel 未覆盖的物种按中性权重处理，不做地理惩罚。
+
+## 声音结果结构
+
+声音识别没有检测框，`box` 为空数组：
+
+```json
+[1000, [{"box": [], "list": [[66.2, "Wing-banded Wren|Wing-banded Wren|Microcerculus bambla", 6505, "B"]]}]]
+```
+
+`animalid` 为 BirdNET 标签表的行序号，仅在本服务内有意义。
