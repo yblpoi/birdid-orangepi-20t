@@ -1,0 +1,23 @@
+birdid-orangepi-20t
+Copyright (C) 2026 yblpoi
+
+本项目的**源代码**以 GNU Affero General Public License v3.0 发布，全文见 LICENSE。
+
+本项目**不分发**任何模型权重文件。使用到的第三方模型及其授权：
+
+| 组件 | 授权 | 商用 |
+| --- | --- | --- |
+| YOLO26-seg（Ultralytics） | AGPL-3.0 | 见 AGPL 条款 |
+| BirdTrace-FastViT-MA36-10K | CC BY-NC 4.0 | 否 |
+| BirdNET（模型） | CC BY-NC-SA 4.0 | 否 |
+| GeoModel（模型） | Apache-2.0 | 是 |
+| GeoModel（代码） | MIT | 是 |
+| BirdNET-Analyzer（代码） | MIT | 是 |
+
+模型权重由使用者在本地按 `scripts/` 下的说明自行下载，并各自遵循其原始授权条款。本项目的 AGPL-3.0 授权不覆盖这些权重文件。
+
+各模型的署名与来源：
+- Ultralytics YOLO26: https://github.com/ultralytics/ultralytics
+- BirdTrace-FastViT-MA36-10K: https://github.com/wardens/BirdTrace-FastViT-MA36-10K
+- BirdNET: https://github.com/birdnet-team/BirdNET-Analyzer
+- GeoModel: https://github.com/birdnet-team/geomodel

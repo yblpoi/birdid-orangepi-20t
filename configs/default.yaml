@@ -1,0 +1,54 @@
+# 默认配置。所有密钥只从环境变量读取，切勿写入本文件。
+server:
+  host: 0.0.0.0            # 监听地址
+  port: 8080               # 监听端口
+  workers: 2               # uvicorn worker 数
+  max_upload_image_mb: 2   # 与懂鸟规范一致
+  max_upload_sound_mb: 5
+  max_image_side: 8192
+  min_image_side: 11
+
+auth:
+  api_key_env: BIRDID_API_KEY   # 环境变量名，未设置则不校验
+  header_name: api_key
+  form_field: api_key
+
+storage:
+  result_ttl_seconds: 1800      # 结果保留时长
+  backend: sqlite               # sqlite | memory
+  sqlite_path: data/birdid.db
+
+npu:
+  device_id: 0
+  model_dir: models               # 相对仓库根目录
+  seg_model: yolo26m-seg.om        # NPU 模型（ATC 生成）
+  cls_model: fastvit.om            # NPU 模型（ATC 生成）
+  seg_onnx: yolo26m-seg.onnx       # 缺少 .om 时的 CPU 回退，仅用于联调
+  cls_onnx: birdtrace.model.onnx
+  classes_file: models/birdtrace_classes.json   # BirdTrace 的 10,480 类清单
+  seg_input_size: 640
+  cls_input_size: 384
+  seg_conf_threshold: 0.25
+  seg_iou_threshold: 0.45
+  crop_margin_ratio: 0.08         # 裁剪时保留的边框比例（经验证可提升识别效果）
+  max_detections: 5               # 单图最多返回的候选框
+
+sound:
+  model_dir: models
+  birdnet_model: birdnet_v3_fp16.onnx
+  geomodel_model: geomodel_v3_fp32.onnx
+  birdnet_backend: npu            # npu | cpu（npu 需先转 .om）
+  geomodel_backend: cpu           # cpu（默认） | npu
+  sample_rate: 32000              # BirdNET v3 的模型采样率
+  window_seconds: 3.0
+  overlap: 0.0
+  top_k: 3
+  min_confidence: 0.1
+  geomodel_threshold: 0.03
+  labels_file: models/birdnet_v3_labels.csv
+  geomodel_labels_file: models/geomodel_v3_labels.txt
+  species_map_file: models/species_map.json
+
+logging:
+  level: INFO
+  access_log: true

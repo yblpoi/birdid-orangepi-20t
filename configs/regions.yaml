@@ -1,0 +1,15 @@
+# 地区代码表（懂鸟 area 字段）。可在此扩展；未列出的代码将被拒绝。
+regions:
+  CN: 中国
+  CN-BJ: 北京
+  CN-SH: 上海
+  CN-GD: 广东
+  CN-ZJ: 浙江
+  CN-JS: 江苏
+  CN-SC: 四川
+  CN-YN: 云南
+  CN-HE: 河北
+  CN-LN: 辽宁
+  CN-AM: 澳门
+  CN-HK: 香港
+  CN-TW: 台湾

@@ -1,0 +1,11 @@
+# 运行时依赖：PyPI 清华镜像安装，ARM64 与 x86 通用。
+numpy==1.26.4
+pillow>=10.0
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+pyyaml>=6.0
+onnxruntime>=1.17
+
+# 仅在需要把 ONNX 转成 Ascend .om 时才用（在开发机或板端均可）：
+# onnx>=1.16

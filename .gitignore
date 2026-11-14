@@ -1,0 +1,33 @@
+# 模型权重与产物
+models/
+*.onnx
+*.om
+*.pt
+*.safetensors
+*.tflite
+!docs/**/*.md
+kernel_meta/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# 运行时数据
+data/
+uploads/
+results/
+*.db
+*.sqlite3
+.env
+
+# 编辑器 / 系统
+.DS_Store
+.idea/
+.vscode/
