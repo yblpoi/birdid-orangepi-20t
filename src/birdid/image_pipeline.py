@@ -21,7 +21,7 @@ from .geo import GeoModel, rerank
 from .runtime import build_runtime
 from .classifier import SpeciesMap, SpeciesPrediction, SpeciesRegistry, load_species_map, scientific_name
 from .detector import Detection, class_name, class_name_zh, decode_predictions, pick_targets
-from .preprocess import crop_with_margin, letterbox, resize_for_classifier
+from .preprocess import crop_resize_for_classifier, letterbox
 
 
 @dataclass
@@ -110,8 +110,9 @@ class ImagePipeline:
     ) -> dict[str, Any]:
         """裁剪鸟类区域并分类，返回懂鸟结果条目。"""
         npu = self._config.npu
-        crop = crop_with_margin(image, detection.box, npu.crop_margin_ratio)
-        tensor = resize_for_classifier(crop, npu.cls_input_size)
+        tensor = crop_resize_for_classifier(
+            image, detection.box, npu.crop_margin_ratio, npu.cls_input_size
+        )
         logits = self._cls.infer(tensor)[0]
         # 地理重排需要更大的候选池：先取 max_detections 个，重排后再截 top_k。
         candidates = self._registry.top_k(logits, max(npu.max_detections, self._config.sound.top_k))

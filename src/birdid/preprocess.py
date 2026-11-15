@@ -66,17 +66,27 @@ def normalize_imagenet(chw: np.ndarray, mean: tuple[float, float, float], std: t
     return np.ascontiguousarray((chw - mean_arr) / std_arr)
 
 
-def crop_with_margin(image: Image.Image, box: tuple[float, float, float, float], margin_ratio: float) -> Image.Image:
-    """按比例外扩裁剪框并裁剪，保留一部分边框以提升分类效果。"""
-    source = _as_rgb(image)
-    width, height = source.size
+def margin_box(
+    image: Image.Image,
+    box: tuple[float, float, float, float],
+    margin_ratio: float,
+) -> tuple[int, int, int, int]:
+    """把检测框按比例外扩并夹到图内，返回整数裁剪框。"""
+    width, height = image.size
     x1, y1, x2, y2 = box
-    box_w, box_h = x2 - x1, y2 - y1
-    mx, my = box_w * margin_ratio, box_h * margin_ratio
+    mx = (x2 - x1) * margin_ratio
+    my = (y2 - y1) * margin_ratio
     left = max(0, int(round(x1 - mx)))
     top = max(0, int(round(y1 - my)))
     right = min(width, int(round(x2 + mx)))
     bottom = min(height, int(round(y2 + my)))
+    return left, top, right, bottom
+
+
+def crop_with_margin(image: Image.Image, box: tuple[float, float, float, float], margin_ratio: float) -> Image.Image:
+    """按比例外扩裁剪框并裁剪，保留一部分边框以提升分类效果。"""
+    source = _as_rgb(image)
+    left, top, right, bottom = margin_box(source, box, margin_ratio)
     if right <= left or bottom <= top:
         return source
     return source.crop((left, top, right, bottom))
@@ -97,3 +107,37 @@ def resize_for_classifier(image: Image.Image, size: int) -> np.ndarray:
     top = (resized.height - size) // 2
     cropped = resized.crop((left, top, left + size, top + size))
     return _to_chw(cropped, size, None)
+
+
+def crop_resize_for_classifier(
+    image: Image.Image,
+    box: tuple[float, float, float, float],
+    margin_ratio: float,
+    size: int,
+) -> np.ndarray:
+    """外扩裁剪 + 短边等比缩放 + 中心裁剪，一步完成。
+
+    语义等价于 crop_with_margin 后接 resize_for_classifier，但只做一次重采样：
+    后者「先缩放到 new_size 再中心裁剪」等价于对缩放图上的一块中心区域采样，
+    所以这里把该区域换算回原图坐标，用一次 Image.resize(box=...) 直接得到结果。
+    省掉一次整块裁剪图的中间分配与一次多余的重采样。
+    """
+    source = _as_rgb(image)
+    width, height = source.size
+    left, top, right, bottom = margin_box(source, box, margin_ratio)
+    if right <= left or bottom <= top:
+        left, top, right, bottom = 0, 0, width, height
+    crop_w, crop_h = right - left, bottom - top
+    scale = size / min(crop_w, crop_h)
+    scaled_w = max(size, int(round(crop_w * scale)))
+    scaled_h = max(size, int(round(crop_h * scale)))
+    off_x = (scaled_w - size) // 2
+    off_y = (scaled_h - size) // 2
+    center = (
+        left + off_x / scale,
+        top + off_y / scale,
+        left + (off_x + size) / scale,
+        top + (off_y + size) / scale,
+    )
+    resized = source.resize((size, size), Image.BILINEAR, box=center, reducing_gap=2.0)
+    return _to_chw(resized, size, None)
