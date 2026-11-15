@@ -52,6 +52,10 @@ API 吞吐（`POST /dongniao` 图片，Mac 侧打流，全部 code=1000 零失�
 吞吐被 NPU 单卡串行执行锁死（`AclModel.infer` 多线程只排队不提吞吐，实测 threads=1/2/4 恒为 17.4 inf/s），
 并发上去后延迟线性增长即排队效应；继续加 `server.workers` 不再有收益。
 
+既然排队只会把延迟推高到客户端超时，服务对队列深度做了硬性上限（`server.max_queue`，默认 32）：
+打满时新请求立刻返回 `[1007, "server busy"]`，让调用方按限流语义快速退避，而不是拿到一个
+迟迟出不来结果的 resultid。
+
 精度对齐：BirdTrace 的 NPU 与 CPU logits 最大绝对差 0.2357（logits 量级 -50~-60），top1 与 top5 完全一致；
 BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分值偏移（详见 `docs/models.md`）。
 

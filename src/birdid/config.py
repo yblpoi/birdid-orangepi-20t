@@ -22,6 +22,7 @@ class ServerConfig:
     max_upload_sound_mb: int
     max_image_side: int
     min_image_side: int
+    max_queue: int
 
 
 @dataclass(frozen=True)

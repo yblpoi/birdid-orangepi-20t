@@ -29,6 +29,7 @@ from .protocol import (
     CODE_OK,
     CODE_PROCESSING,
     CODE_QUOTA,
+    MSG_BUSY,
     MSG_SOUND_URL_ERROR,
     MSG_URL_FAILED,
     error,
@@ -62,6 +63,7 @@ class AppState:
             self.store,
             max_workers=config.server.workers,
             ttl_seconds=config.storage.result_ttl_seconds,
+            max_queue=config.server.max_queue,
         )
         self.registry = SpeciesRegistry(config.resolve(config.npu.classes_file))
         self.image_pipeline = ImagePipeline(config, self.registry)
@@ -162,6 +164,14 @@ async def _dispatch(state: AppState, form: dict[str, Any]) -> JSONResponse:
     return JSONResponse(content=error(CODE_PROCESSING, "missing parameters"))
 
 
+def _accept(state: AppState, kind: str, class_code: str, work: Any) -> list[Any]:
+    """受理一个后台任务；队列打满时立刻回忙，而不是让请求排队到超时。"""
+    result_id = state.executor.submit(kind, class_code, work)
+    if result_id is None:
+        return error(CODE_QUOTA, MSG_BUSY)
+    return processing(result_id)
+
+
 def _handle_result(state: AppState, result_id: str) -> list[Any]:
     """轮询识别结果。"""
     record = state.executor.get(result_id)
@@ -203,7 +213,7 @@ def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
             return MSG_URL_FAILED
         return _run_image(state, data, geo)
 
-    return processing(state.executor.submit("image", class_code, work))
+    return _accept(state, "image", class_code, work)
 
 
 def _accept_image_task(
@@ -212,9 +222,7 @@ def _accept_image_task(
     """受理上传图片并异步识别。"""
     if not _valid_image_size(state, raw):
         return error(CODE_PROCESSING, "image too large")
-    return processing(
-        state.executor.submit("image", class_code, lambda: _run_image(state, raw, geo))
-    )
+    return _accept(state, "image", class_code, lambda: _run_image(state, raw, geo))
 
 
 def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
@@ -226,7 +234,7 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
             return error(CODE_PROCESSING, "empty sound")
         if len(raw) > state.config.server.max_upload_sound_mb * 1024 * 1024:
             return error(CODE_PROCESSING, "sound too large")
-        return processing(state.executor.submit("sound", "B", lambda: _run_sound(state, raw, geo)))
+        return _accept(state, "sound", "B", lambda: _run_sound(state, raw, geo))
     url = _text(form.get("sound_url"))
     if not url:
         return error(CODE_PROCESSING, MSG_SOUND_URL_ERROR)
@@ -238,7 +246,7 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
             return MSG_SOUND_URL_ERROR
         return _run_sound(state, data, geo)
 
-    return processing(state.executor.submit("sound", "B", work))
+    return _accept(state, "sound", "B", work)
 
 
 def _run_image(state: AppState, raw: bytes, geo: tuple = (None, None, None)) -> Any:

@@ -96,6 +96,7 @@ def client(monkeypatch, tmp_path):
                 "  max_upload_sound_mb: 5",
                 "  max_image_side: 8192",
                 "  min_image_side: 11",
+                "  max_queue: 4",
                 "auth:",
                 "  api_key_env: BIRDID_TEST_KEY",
                 "  header_name: api_key",
@@ -221,3 +222,19 @@ def test_api_key_enforced(monkeypatch, client: TestClient) -> None:
     assert code == CODE_QUOTA
     code, _ = client.post("/dongniao", data={"quota": "1"}, headers={"api_key": "secret"}).json()
     assert code == CODE_OK
+
+def test_queue_full_returns_busy(monkeypatch, client: TestClient) -> None:
+    """队列打满时应立刻返回 1007，而不是让请求排队到超时。"""
+    import io
+
+    from PIL import Image
+
+    state = client.app.state.birdid
+    monkeypatch.setattr(state.executor, "submit", lambda *a, **k: None)
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 48), color=(10, 20, 30)).save(buffer, format="JPEG")
+    body = client.post(
+        "/dongniao",
+        files={"image": ("bird.jpg", buffer.getvalue(), "image/jpeg")},
+    ).json()
+    assert body == [CODE_QUOTA, "server busy"]

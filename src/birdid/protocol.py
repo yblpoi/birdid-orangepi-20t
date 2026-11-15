@@ -14,6 +14,7 @@ MSG_NO_ANIMALS: Final[str] = "No animals"
 MSG_URL_FAILED: Final[str] = "URL download failed"
 MSG_SOUND_URL_ERROR: Final[str] = "Sound url error"
 MSG_PROCESSING: Final[str] = "processing"
+MSG_BUSY: Final[str] = "server busy"
 
 VALID_CLASSES: Final[frozenset[str]] = frozenset({"B", "M", "A", "R", "F"})
 
