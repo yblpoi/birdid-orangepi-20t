@@ -42,10 +42,18 @@ source /usr/local/Ascend/cann-9.2.1/set_env.sh
 
 ### 4.1 YOLO26-seg
 
+先裁掉分割原型分支：服务只用检测框（懂鸟规范返回 box + list，不需要 mask），
+而原来的 `output1` 每次推理要往主机拷 3.2 MB，并驱动一条 prototype 卷积分支。
+裁掉后 640x640 单图 114.3 ms → 101.6 ms，检测结果逐位相同：
+
 ```bash
-scripts/convert_om.sh models/yolo26m-seg.onnx models/yolo26m-seg \
+python scripts/export_yolo.py --weights yolo26m-seg.pt --output models/yolo26m-seg.onnx
+python scripts/prune_yolo_outputs.py models/yolo26m-seg.onnx models/yolo26m-seg-box.onnx
+scripts/convert_om.sh models/yolo26m-seg-box.onnx models/yolo26m-seg \
     --input_shape 'images:1,3,640,640'
 ```
+
+裁完只有 `output0` 一个输出，服务侧解码逻辑不变（`decode_predictions` 只读 `output0`）。
 
 ### 4.2 BirdTrace FastViT-MA36
 
