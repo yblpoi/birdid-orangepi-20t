@@ -316,3 +316,16 @@ def test_area_uses_conservative_geo_weight(client) -> None:
         )
         is None
     )
+
+
+def test_oversized_upload_is_truncated_at_read_time(client) -> None:
+    """超过上限的上传在读入阶段就被截断，并回既有的「太大」错误。"""
+    state = client.app.state.birdid
+    limit = app_module._upload_limit(state, "image")
+    payload = b"x" * (limit + 1024)
+    response = client.post(
+        "/dongniao",
+        files={"image": ("big.jpg", payload, "image/jpeg")},
+    )
+    assert response.status_code == 200
+    assert response.json() == [1001, "image too large"]

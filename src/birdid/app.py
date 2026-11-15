@@ -119,7 +119,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def dongniao(request: Request):
         """懂鸟兼容端点。"""
         state: AppState = request.app.state.birdid
-        form = await _read_form(request)
+        form = await _read_form(request, _upload_limit(state, "image"), _upload_limit(state, "sound"))
         if not _authorized(state, request, form):
             return JSONResponse(status_code=200, content=error(CODE_QUOTA, "invalid api_key"))
         return await _dispatch(state, form)
@@ -127,15 +127,21 @@ def create_app(config_path: str | None = None) -> FastAPI:
     return app
 
 
-async def _read_form(request: Request) -> dict[str, Any]:
-    """读取 multipart 或 urlencoded 表单，把文件读成 bytes。"""
+async def _read_form(request: Request, image_limit: int, sound_limit: int) -> dict[str, Any]:
+    """读取 multipart 或 urlencoded 表单，把文件读成 bytes。
+
+    上传体积在读取阶段就设上限：不设的话 value.read() 会把任意大的请求体
+    整个读进内存，一个畸形请求就能把服务打挂。超限时只读 `limit + 1` 字节，
+    后续的体积校验会按正常流程回 1001，不会真的分配整块内存。
+    """
     content_type = request.headers.get("content-type", "")
     if "multipart/form-data" in content_type:
         parsed = await request.form()
         result: dict[str, Any] = {}
         for key, value in parsed.multi_items():
             if hasattr(value, "read"):
-                result[key] = await value.read()
+                limit = sound_limit if key == "sound" else image_limit
+                result[key] = await _read_upload(value, limit)
             else:
                 result[key] = value
         return result
@@ -143,6 +149,33 @@ async def _read_form(request: Request) -> dict[str, Any]:
         parsed = await request.form()
         return dict(parsed)
     return {}
+
+
+async def _read_upload(value: Any, limit: int) -> bytes:
+    """分块读取上传文件，超过 limit 立即停止。
+
+    超限时返回已经读到的部分（长度必定大于 limit），交给调用方按既有的
+    体积校验回 1001，这样报错文案与「文件太大」保持一致，内存也止步于
+    limit + 一个分块。
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await value.read(256 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        chunks.append(chunk)
+        if total > limit:
+            break
+    return b"".join(chunks)
+
+
+def _upload_limit(state: AppState, kind: str) -> int:
+    """按业务种类取上传上限。"""
+    if kind == "sound":
+        return state.config.server.max_upload_sound_mb * 1024 * 1024
+    return state.config.server.max_upload_image_mb * 1024 * 1024
 
 
 def _authorized(state: AppState, request: Request, form: dict[str, Any]) -> bool:
