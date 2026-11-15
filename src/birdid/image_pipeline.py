@@ -69,6 +69,7 @@ class ImagePipeline:
         image: Image.Image,
         box_scale: float = 1.0,
         geo: tuple = (None, None, None),
+        geo_weight: float | None = None,
     ) -> ImageResult:
         """对整图执行门禁与分类。
 
@@ -90,7 +91,9 @@ class ImagePipeline:
         )
         birds, others = pick_targets(detections, npu.max_detections)
         if birds:
-            entries = [self._classify_bird(source, det, box_scale, geo) for det in birds]
+            entries = [
+                self._classify_bird(source, det, box_scale, geo, geo_weight) for det in birds
+            ]
             return ImageResult(entries=entries, has_bird=True)
         if others:
             entries = [self._describe_non_bird(det, box_scale) for det in others]
@@ -103,6 +106,7 @@ class ImagePipeline:
         detection: Detection,
         box_scale: float = 1.0,
         geo: tuple = (None, None, None),
+        geo_weight: float | None = None,
     ) -> dict[str, Any]:
         """裁剪鸟类区域并分类，返回懂鸟结果条目。"""
         npu = self._config.npu
@@ -111,13 +115,16 @@ class ImagePipeline:
         logits = self._cls.infer(tensor)[0]
         # 地理重排需要更大的候选池：先取 max_detections 个，重排后再截 top_k。
         candidates = self._registry.top_k(logits, max(npu.max_detections, self._config.sound.top_k))
-        predictions = self._apply_geo(candidates, geo)[: self._config.sound.top_k]
+        predictions = self._apply_geo(candidates, geo, geo_weight)[: self._config.sound.top_k]
         items = [self._species_item(prediction) for prediction in predictions]
         box = [round(v * box_scale) for v in detection.box]
         return {"box": box, "list": items}
 
     def _apply_geo(
-        self, predictions: list[SpeciesPrediction], geo: tuple
+        self,
+        predictions: list[SpeciesPrediction],
+        geo: tuple,
+        geo_weight: float | None = None,
     ) -> list[SpeciesPrediction]:
         """用 GeoModel 地理先验重排候选；条件不足时原样返回。"""
         if self._geo is None or self._species_map is None:
@@ -125,7 +132,7 @@ class ImagePipeline:
         latitude, longitude, week = geo
         if latitude is None or longitude is None or week is None:
             return predictions
-        weight = self._config.npu.geo_weight
+        weight = self._config.npu.geo_weight if geo_weight is None else geo_weight
         if weight <= 0:
             return predictions
         spatial = self._geo.scores(latitude, longitude, week)

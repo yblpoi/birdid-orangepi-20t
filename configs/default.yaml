@@ -36,6 +36,7 @@ npu:
   max_detections: 5               # 单图最多返回的候选框
   species_map_file: models/birdtrace_species_map.json   # BirdTrace 类序号 -> 学名/GeoModel 行号
   geo_weight: 1.0                 # 地理先验指数：0 关闭重排，1 表示直接乘地理概率
+  area_geo_weight: 0.5            # 只给懂鸟 area 地区码时的权重；代表坐标是省级中心，比实测坐标粗
 
 sound:
   model_dir: models

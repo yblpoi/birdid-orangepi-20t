@@ -48,7 +48,7 @@ class _StubImagePipeline:
     def __init__(self) -> None:
         self.seen: list[Any] = []
 
-    def predict(self, image, box_scale=1.0, geo=(None, None, None)):
+    def predict(self, image, box_scale=1.0, geo=(None, None, None), geo_weight=None):
         self.seen.append(image.size)
 
         class _Result:
@@ -129,6 +129,7 @@ def client(monkeypatch, tmp_path):
                 "  max_detections: 5",
                 "  species_map_file: models/species_map.json",
                 "  geo_weight: 1.0",
+                "  area_geo_weight: 0.5",
                 "sound:",
                 "  model_dir: models",
                 "  birdnet_model: birdnet.onnx",
@@ -302,3 +303,16 @@ def test_area_code_becomes_geo_hint(client, monkeypatch) -> None:
     # 显式经纬度优先于 area。
     lat2, lon2, _ = app_module._parse_geo({"area": "CN-BJ", "latitude": "51.5", "longitude": "-0.1"}, config)
     assert (lat2, lon2) == (51.5, -0.1)
+
+def test_area_uses_conservative_geo_weight(client) -> None:
+    """只给 area 时用更保守的地理权重，显式经纬度才用满权重。"""
+    state = client.app.state.birdid
+    assert app_module._geo_weight(state, {}) is None
+    assert app_module._geo_weight(state, {"area": "CN-BJ"}) == state.config.npu.area_geo_weight
+    assert app_module._geo_weight(state, {"latitude": "39.9", "longitude": "116.4"}) is None
+    assert (
+        app_module._geo_weight(
+            state, {"area": "CN-BJ", "latitude": "39.9", "longitude": "116.4"}
+        )
+        is None
+    )

@@ -208,11 +208,12 @@ def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
     # 只在客户端显式传了 class 时才按类别过滤；默认 B 不应该吃掉非鸟结果。
     class_filter = class_code if declared else None
     geo = _parse_geo(form, state.config)
+    geo_weight = _geo_weight(state, form)
     if "image" in form:
         raw = form["image"]
         if not isinstance(raw, bytes) or not raw:
             return error(CODE_PROCESSING, "empty image")
-        return _accept_image_task(state, raw, class_code, geo, class_filter)
+        return _accept_image_task(state, raw, class_code, geo, class_filter, geo_weight)
     url = _text(form.get("url"))
     if not url:
         return error(CODE_PROCESSING, "empty url")
@@ -222,7 +223,7 @@ def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
             data = _download(url, HTTP_TIMEOUT_IMAGE, _image_limit(state))
         except Exception:  # noqa: BLE001
             return MSG_URL_FAILED
-        return _run_image(state, data, geo, class_filter)
+        return _run_image(state, data, geo, class_filter, geo_weight)
 
     return _accept(state, "image", class_code, work)
 
@@ -233,6 +234,7 @@ def _accept_image_task(
     class_code: str,
     geo: tuple = (None, None, None),
     class_filter: "str | None" = None,
+    geo_weight: float | None = None,
 ) -> list[Any]:
     """受理上传图片并异步识别。"""
     if not _valid_image_size(state, raw):
@@ -241,7 +243,7 @@ def _accept_image_task(
         state,
         "image",
         class_code,
-        lambda: _run_image(state, raw, geo, class_filter),
+        lambda: _run_image(state, raw, geo, class_filter, geo_weight),
     )
 
 
@@ -274,6 +276,7 @@ def _run_image(
     raw: bytes,
     geo: tuple = (None, None, None),
     class_filter: "str | None" = None,
+    geo_weight: float | None = None,
 ) -> Any:
     """解码并执行图片识别，返回懂鸟结果数组或 None。"""
     image = Image.open(io.BytesIO(raw))
@@ -286,7 +289,9 @@ def _run_image(
         return None
     scale = _draft_decode(image, state.config.npu.decode_max_side)
     image.load()
-    result = state.image_pipeline.predict(image, box_scale=scale, geo=geo)
+    result = state.image_pipeline.predict(
+        image, box_scale=scale, geo=geo, geo_weight=geo_weight
+    )
     entries = _filter_by_class(result.entries, class_filter)
     return entries or None
 
@@ -306,6 +311,22 @@ def _draft_decode(image: Image.Image, max_side: int) -> float:
         return 1.0
     # draft 按 2 的幂抽样，宽高比例一致；取两者最大值以防边界取整偏差。
     return max(before[0] / after[0], before[1] / after[1])
+
+
+def _geo_weight(state: AppState, form: dict[str, Any]) -> float | None:
+    """只有 area 地区码时用更保守的地理权重。
+
+    显式经纬度是用户现场的真实位置，可以直接用满权重；area 只能映射到省级
+    代表坐标，用它做重排会把「同属近缘种」按省份分布强行拉开。实测在
+    北京代表点下满权重会把 Eurasian Blue Tit 压成 Azure Tit（蓝山雀根本不在
+    华北分布），把权重降到 0.5 就能保持正确答案且仍有纠偏能力。
+    """
+    npu = state.config.npu
+    if _text(form.get("latitude")) or _text(form.get("longitude")):
+        return None
+    if _text(form.get("area")):
+        return npu.area_geo_weight
+    return None
 
 
 def _parse_area(config: Any, value: Any) -> tuple[float | None, float | None]:

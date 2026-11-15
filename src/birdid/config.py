@@ -62,6 +62,7 @@ class NpuConfig:
     max_detections: int
     species_map_file: str
     geo_weight: float
+    area_geo_weight: float
 
 
 @dataclass(frozen=True)
