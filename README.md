@@ -77,6 +77,22 @@ BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分�
    American vs. European Goldfinch 这类地缘替代种；叠上 GeoModel 后修好 12 个、打坏 0 个。
    反向对照（把 97 个拍摄坐标在标签之间随机打乱 8 次）gain 全部为负（均值 -12.1），说明增益不是随机抖动。
 
+## 鸟鸣精度（72 段录音实测）
+
+评测集来自 iNaturalist 研究级带音频观测（25 个欧洲常见物种，每物种最多 3 段，
+用 ffmpeg 统一转成 32 kHz 单声道并截前 12 秒），逐段走声音链路，只统计 top1 精确命中
+（已折叠 Common/Eurasian Chaffinch、Common/Eurasian Blackbird 两对同物异名）。
+
+| 配置 | top1 命中 / 总数 | 命中率 |
+| --- | --- | --- |
+| 不加地理先验 | 58 / 72 | 80.6% |
+| + GeoModel 地理/季节先验 | 60 / 72 | 83.3% |
+| 上述的 top5 命中率 | 68 / 72 | 94.4% |
+
+结论：录音本身含大量背景鸣声与重叠个体，最典型的错例是整段只有背景物种在叫
+（如标注 Eurasian Blue Tit 的片段里 Common Blackbird 更响），属于标注与音频内容不一致，
+而不是模型退化；地理先验在声音链路上同样只增不减（+2）。
+
 ## 状态
 
 图像与声音链路均已端到端跑通：YOLO26m-seg 与 BirdTrace 全量走 NPU；BirdNET 采用「CPU mel 前端 + NPU CNN 主干」混合后端；GeoModel 走 CPU。

@@ -126,6 +126,19 @@ curl -s -H 'api_key: ...' -F image=@bird.jpg -F upload=1 localhost:8080/dongniao
 
 基准测试：`PYTHONPATH=src python scripts/benchmark.py --rounds 10`。
 
+复现 README 里的两套精度数字（都要联网拉 iNaturalist 素材）：
+
+```bash
+# 图片：抓真实照片，再用 HTTP 链路逐张识别（脚本只负责取图与写清单）
+python scripts/fetch_eval_set.py models/birdtrace_classes.json taxa.txt /tmp/birdimg img_manifest.txt
+
+# 声音：抓带音频的观测，ffmpeg 统一转 32 kHz 单声道后逐段识别
+python scripts/fetch_sound_eval.py models/birdtrace_classes.json taxa.txt /tmp/birdsnd sound_manifest.txt
+PYTHONPATH=src python scripts/eval_sound.py sound_manifest.txt --verbose
+```
+
+`eval_sound.py` 会同时打印「不加地理先验」「加地理先验」「top5」三行命中率。
+
 ## 7. 排查
 
 - `npu-smi info` 显示 `Health: Alarm` 是该开发板的硬件设计缺陷，可忽略。

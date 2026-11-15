@@ -40,6 +40,20 @@
 不要把 NPU 与 CPU 的**原始张量**直接对比：YOLO26-seg 的 32 个 mask 系数在低置信度行上差异极大（596.8），
 但解码后的检测框、分数、类别完全一致。验收要比较**业务语义**（框 + 类别 + 排序），不是浮点数。
 
+### 鸟鸣链路精度（72 段录音）
+
+| 配置 | top1 | top5 |
+| --- | --- | --- |
+| BirdNET v3（CPU mel + NPU 主干） | 58 / 72 = 80.6% | — |
+| 再叠 GeoModel 地理/季节先验 | 60 / 72 = 83.3% | 68 / 72 = 94.4% |
+
+录音取自 iNaturalist 研究级观测，统一转 32 kHz 单声道并截前 12 秒（4 个窗口取最大概率）。
+错例集中在两类：一是标注物种只是背景个体（例如标注 Eurasian Blue Tit 的片段里 Common Blackbird 更响），
+二是录音里有多个个体同时鸣叫。GeoModel 在声音链路上同样是只增不减。
+
+注意 BirdNET 与 BirdTrace 对同一物种的英文俗名可能不同（BirdNET 用 Eurasian Chaffinch，
+BirdTrace 用 Common Chaffinch），评测时必须按同一规范折叠，否则会把正确结果算成错误。
+
 ## 授权提示
 
 BirdTrace 与 BirdNET 的权重为**非商用**授权。若需商用，请自行替换为可商用模型或另行取得授权。
