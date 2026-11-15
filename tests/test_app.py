@@ -289,3 +289,16 @@ def test_class_filter_is_opt_in() -> None:
     assert [entry["list"][0][3] for entry in kept] == ["B"]
     assert app_module._filter_by_class(entries, "M")[0]["list"][0][2] == 16
     assert app_module._filter_by_class(entries, "A") == []
+
+def test_area_code_becomes_geo_hint(client, monkeypatch) -> None:
+    """只给懂鸟的 area 地区码时，也要能换成代表坐标做地理先验。"""
+    config = app_module.load_config(None)
+    assert config.region_coords["CN-BJ"] == (39.9, 116.4)
+    lat, lon, week = app_module._parse_geo({"area": "CN-BJ"}, config)
+    assert (lat, lon) == (39.9, 116.4)
+    assert 1 <= week <= 48
+    # 未知地区码不参与地理先验，行为与不传一致。
+    assert app_module._parse_geo({"area": "ZZ-99"}, config) == (None, None, None)
+    # 显式经纬度优先于 area。
+    lat2, lon2, _ = app_module._parse_geo({"area": "CN-BJ", "latitude": "51.5", "longitude": "-0.1"}, config)
+    assert (lat2, lon2) == (51.5, -0.1)

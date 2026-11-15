@@ -207,7 +207,7 @@ def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
     class_code = normalize_class(declared)
     # 只在客户端显式传了 class 时才按类别过滤；默认 B 不应该吃掉非鸟结果。
     class_filter = class_code if declared else None
-    geo = _parse_geo(form)
+    geo = _parse_geo(form, state.config)
     if "image" in form:
         raw = form["image"]
         if not isinstance(raw, bytes) or not raw:
@@ -247,7 +247,7 @@ def _accept_image_task(
 
 def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
     """鸟鸣识别分支。"""
-    geo = _parse_geo(form)
+    geo = _parse_geo(form, state.config)
     if "sound" in form:
         raw = form["sound"]
         if not isinstance(raw, bytes) or not raw:
@@ -308,15 +308,33 @@ def _draft_decode(image: Image.Image, max_side: int) -> float:
     return max(before[0] / after[0], before[1] / after[1])
 
 
-def _parse_geo(form: dict[str, Any]) -> tuple[float | None, float | None, int | None]:
-    """解析可选的地理/季节过滤参数（懂鸟规范之外的扩展字段）。"""
+def _parse_area(config: Any, value: Any) -> tuple[float | None, float | None]:
+    """把懂鸟的 area 地区码换成该地区的代表坐标。"""
+    code = _text(value).strip().upper()
+    if not code:
+        return None, None
+    return config.region_coords.get(code, (None, None))
+
+
+def _parse_geo(
+    form: dict[str, Any],
+    config: Any = None,
+) -> tuple[float | None, float | None, int | None]:
+    """解析可选的地理/季节过滤参数。
+
+    经纬度优先；只给懂鸟的 area 地区码时用该地区的代表坐标；都拿不到就不做
+    地理先验（返回 None），行为与不传完全一致。
+    """
     try:
         lat = float(_text(form.get("latitude"))) if form.get("latitude") is not None else None
         lon = float(_text(form.get("longitude"))) if form.get("longitude") is not None else None
     except (TypeError, ValueError):
         return None, None, None
     if lat is None or lon is None:
-        return None, None, None
+        area_lat, area_lon = _parse_area(config, form.get("area")) if config is not None else (None, None)
+        if area_lat is None or area_lon is None:
+            return None, None, None
+        lat, lon = area_lat, area_lon
     if not (-90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0):
         return None, None, None
     week_text = _text(form.get("week"))

@@ -1,15 +1,16 @@
-# 地区代码表（懂鸟 area 字段）。可在此扩展；未列出的代码将被拒绝。
+# 地区代码表（懂鸟 area 字段）。可在此扩展；未列出的代码视为未知地区（不参与地理先验）。
+# name 是中文名，lat/lon 是该地区的代表坐标，用于在客户端只给 area 时提供地理先验。
 regions:
-  CN: 中国
-  CN-BJ: 北京
-  CN-SH: 上海
-  CN-GD: 广东
-  CN-ZJ: 浙江
-  CN-JS: 江苏
-  CN-SC: 四川
-  CN-YN: 云南
-  CN-HE: 河北
-  CN-LN: 辽宁
-  CN-AM: 澳门
-  CN-HK: 香港
-  CN-TW: 台湾
+  CN:    {name: 中国, lat: 35.00, lon: 105.00}
+  CN-BJ: {name: 北京, lat: 39.90, lon: 116.40}
+  CN-SH: {name: 上海, lat: 31.23, lon: 121.47}
+  CN-GD: {name: 广东, lat: 23.13, lon: 113.26}
+  CN-ZJ: {name: 浙江, lat: 30.27, lon: 120.15}
+  CN-JS: {name: 江苏, lat: 32.06, lon: 118.80}
+  CN-SC: {name: 四川, lat: 30.66, lon: 104.07}
+  CN-YN: {name: 云南, lat: 25.04, lon: 102.71}
+  CN-HE: {name: 河北, lat: 38.04, lon: 114.51}
+  CN-LN: {name: 辽宁, lat: 41.81, lon: 123.43}
+  CN-AM: {name: 澳门, lat: 22.20, lon: 113.55}
+  CN-HK: {name: 香港, lat: 22.32, lon: 114.17}
+  CN-TW: {name: 台湾, lat: 25.03, lon: 121.57}

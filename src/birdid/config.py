@@ -99,6 +99,7 @@ class Config:
     sound: SoundConfig
     logging: LoggingConfig
     regions: dict[str, str]
+    region_coords: dict[str, tuple[float, float]]
 
     def resolve(self, relative: str) -> Path:
         """把配置里的相对路径解析为仓库内的绝对路径。"""
@@ -125,6 +126,18 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         with regions_file.open("r", encoding="utf-8") as handle:
             regions_raw = (yaml.safe_load(handle) or {}).get("regions") or {}
 
+    regions: dict[str, str] = {}
+    region_coords: dict[str, tuple[float, float]] = {}
+    for code, value in regions_raw.items():
+        key = str(code)
+        if isinstance(value, dict):
+            regions[key] = str(value.get("name") or key)
+            lat, lon = value.get("lat"), value.get("lon")
+            if lat is not None and lon is not None:
+                region_coords[key] = (float(lat), float(lon))
+        else:
+            regions[key] = str(value)
+
     return Config(
         server=ServerConfig(**_section(raw, "server")),
         auth=AuthConfig(**_section(raw, "auth")),
@@ -132,5 +145,6 @@ def load_config(path: str | os.PathLike[str] | None = None) -> Config:
         npu=NpuConfig(**_section(raw, "npu")),
         sound=SoundConfig(**_section(raw, "sound")),
         logging=LoggingConfig(**_section(raw, "logging")),
-        regions={str(k): str(v) for k, v in regions_raw.items()},
+        regions=regions,
+        region_coords=region_coords,
     )
