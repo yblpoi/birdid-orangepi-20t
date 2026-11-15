@@ -230,6 +230,7 @@ def test_api_key_enforced(monkeypatch, client: TestClient) -> None:
     code, _ = client.post("/dongniao", data={"quota": "1"}, headers={"api_key": "secret"}).json()
     assert code == CODE_OK
 
+
 def test_queue_full_returns_busy(monkeypatch, client: TestClient) -> None:
     """队列打满时应立刻返回 1007，而不是让请求排队到超时。"""
     import io
@@ -245,3 +246,46 @@ def test_queue_full_returns_busy(monkeypatch, client: TestClient) -> None:
         files={"image": ("bird.jpg", buffer.getvalue(), "image/jpeg")},
     ).json()
     assert body == [CODE_QUOTA, "server busy"]
+
+def test_download_rejects_oversized_payload() -> None:
+    """远端声称或实际超大时都要中止，避免 URL 提交把内存打爆。"""
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    import pytest
+
+    payload = b"x" * 4096
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, *args: object) -> None:
+            return None
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        url = "http://127.0.0.1:" + str(server.server_port) + "/x.jpg"
+        with pytest.raises(ValueError):
+            app_module._download(url, 5.0, 1024)
+        assert app_module._download(url, 5.0, 8192) == payload
+    finally:
+        server.shutdown()
+        server.server_close()
+
+def test_class_filter_is_opt_in() -> None:
+    """不传 class 时保留非鸟结果，显式传 B 时才把非鸟条目裁掉。"""
+    entries = [
+        {"box": [1, 2, 3, 4], "list": [[99.0, "狗|dog|dog", 16, "M"]]},
+        {"box": [5, 6, 7, 8], "list": [[90.0, "鸟|bird|bird", 14, "B"]]},
+    ]
+    assert app_module._filter_by_class(entries, None) == entries
+    kept = app_module._filter_by_class(entries, "B")
+    assert [entry["list"][0][3] for entry in kept] == ["B"]
+    assert app_module._filter_by_class(entries, "M")[0]["list"][0][2] == 16
+    assert app_module._filter_by_class(entries, "A") == []

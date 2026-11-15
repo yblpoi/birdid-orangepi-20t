@@ -203,34 +203,46 @@ def _handle_animal(animal_id: str, class_code: str) -> list[Any]:
 
 def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
     """图片识别分支。"""
-    class_code = normalize_class(_text(form.get("class")))
+    declared = _text(form.get("class"))
+    class_code = normalize_class(declared)
+    # 只在客户端显式传了 class 时才按类别过滤；默认 B 不应该吃掉非鸟结果。
+    class_filter = class_code if declared else None
     geo = _parse_geo(form)
     if "image" in form:
         raw = form["image"]
         if not isinstance(raw, bytes) or not raw:
             return error(CODE_PROCESSING, "empty image")
-        return _accept_image_task(state, raw, class_code, geo)
+        return _accept_image_task(state, raw, class_code, geo, class_filter)
     url = _text(form.get("url"))
     if not url:
         return error(CODE_PROCESSING, "empty url")
 
     def work() -> Any:
         try:
-            data = _download(url, HTTP_TIMEOUT_IMAGE)
+            data = _download(url, HTTP_TIMEOUT_IMAGE, _image_limit(state))
         except Exception:  # noqa: BLE001
             return MSG_URL_FAILED
-        return _run_image(state, data, geo)
+        return _run_image(state, data, geo, class_filter)
 
     return _accept(state, "image", class_code, work)
 
 
 def _accept_image_task(
-    state: AppState, raw: bytes, class_code: str, geo: tuple = (None, None, None)
+    state: AppState,
+    raw: bytes,
+    class_code: str,
+    geo: tuple = (None, None, None),
+    class_filter: "str | None" = None,
 ) -> list[Any]:
     """受理上传图片并异步识别。"""
     if not _valid_image_size(state, raw):
         return error(CODE_PROCESSING, "image too large")
-    return _accept(state, "image", class_code, lambda: _run_image(state, raw, geo))
+    return _accept(
+        state,
+        "image",
+        class_code,
+        lambda: _run_image(state, raw, geo, class_filter),
+    )
 
 
 def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
@@ -249,7 +261,7 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
 
     def work() -> Any:
         try:
-            data = _download(url, HTTP_TIMEOUT_SOUND)
+            data = _download(url, HTTP_TIMEOUT_SOUND, _sound_limit(state))
         except Exception:  # noqa: BLE001
             return MSG_SOUND_URL_ERROR
         return _run_sound(state, data, geo)
@@ -257,7 +269,12 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
     return _accept(state, "sound", "B", work)
 
 
-def _run_image(state: AppState, raw: bytes, geo: tuple = (None, None, None)) -> Any:
+def _run_image(
+    state: AppState,
+    raw: bytes,
+    geo: tuple = (None, None, None),
+    class_filter: "str | None" = None,
+) -> Any:
     """解码并执行图片识别，返回懂鸟结果数组或 None。"""
     image = Image.open(io.BytesIO(raw))
     width, height = image.size
@@ -270,7 +287,8 @@ def _run_image(state: AppState, raw: bytes, geo: tuple = (None, None, None)) -> 
     scale = _draft_decode(image, state.config.npu.decode_max_side)
     image.load()
     result = state.image_pipeline.predict(image, box_scale=scale, geo=geo)
-    return result.entries or None
+    entries = _filter_by_class(result.entries, class_filter)
+    return entries or None
 
 
 def _draft_decode(image: Image.Image, max_side: int) -> float:
@@ -322,8 +340,37 @@ def _run_sound(
     return state.sound_pipeline.predict(raw, latitude, longitude, week)
 
 
+def _filter_by_class(entries: list[Any], class_filter: "str | None") -> list[Any]:
+    """按客户端显式声明的 class 过滤结果条目。
+
+    懂鸟规范里 class 是 B/M/A/R/F 的组合，语义是"只关心这几类"。但默认值
+    就是 B，而本项目在整图没有鸟时会如实返回检出的其它类别（例如"狗 99%"），
+    所以这里只在客户端显式传了 class 字段时才过滤；不传或传空一律不过滤，
+    保持"先找鸟、找不到再说明图里是什么"的行为。
+    """
+    if not entries or class_filter is None:
+        return entries
+    allowed = set(class_filter)
+    kept = []
+    for entry in entries:
+        items = [item for item in entry.get("list", []) if item[3] in allowed]
+        if items:
+            kept.append({"box": entry["box"], "list": items})
+    return kept
+
+
+def _image_limit(state: AppState) -> int:
+    """图片字节上限，与懂鸟规范一致的 2MB 默认值。"""
+    return state.config.server.max_upload_image_mb * 1024 * 1024
+
+
+def _sound_limit(state: AppState) -> int:
+    """鸟鸣字节上限，默认 5MB。"""
+    return state.config.server.max_upload_sound_mb * 1024 * 1024
+
+
 def _valid_image_size(state: AppState, raw: bytes) -> bool:
-    return len(raw) <= state.config.server.max_upload_image_mb * 1024 * 1024
+    return len(raw) <= _image_limit(state)
 
 
 def _text(value: Any) -> str:
@@ -341,14 +388,31 @@ class _LimitedRedirect(urllib.request.HTTPRedirectHandler):
     max_repeats = MAX_REDIRECTS
 
 
-def _download(url: str, timeout: float) -> bytes:
-    """下载远端图片或音频。"""
+def _download(url: str, timeout: float, max_bytes: int) -> bytes:
+    """下载远端图片或音频，超过 max_bytes 立即中止。
+
+    远端可以声称任意 Content-Length 或干脆不声明，所以除了预检头之外
+    还要在读取过程中累计字节数，避免恶意 URL 把进程内存打爆。
+    """
     if not url.lower().startswith(("http://", "https://")):
         raise ValueError("仅支持 http/https")
     opener = urllib.request.build_opener(_LimitedRedirect)
     request = urllib.request.Request(url, headers={"User-Agent": "birdid/1.0"})
     with opener.open(request, timeout=timeout) as response:
-        return response.read()
+        declared = response.headers.get("Content-Length")
+        if declared is not None and declared.isdigit() and int(declared) > max_bytes:
+            raise ValueError("下载内容超过上限")
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = response.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > max_bytes:
+                raise ValueError("下载内容超过上限")
+            chunks.append(chunk)
+        return b"".join(chunks)
 
 
 def main() -> None:
