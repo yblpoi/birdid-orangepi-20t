@@ -31,6 +31,18 @@ YOLO26-seg 需要自行导出：
 python scripts/export_yolo.py --weights yolo26m-seg.pt --output models/yolo26m-seg.onnx
 ```
 
+BirdTrace 的 `classes.json` 只有英文俗名，而 GeoModel 按学名索引，需要离线生成一次映射表
+（也是这一步让图片链路能拿到学名标签）：
+
+```bash
+python scripts/build_species_map.py \
+  models/birdtrace_classes.json \
+  models/geomodel_v3_labels.txt \
+  models/birdtrace_species_map.json
+```
+
+正常输出 `classes=10480 matched=9257 (88.3%)`。匹配率低于 85% 通常是 GeoModel 标签表版本不对。
+
 ## 4. 转 OM 模型（NPU 推理用）
 
 三个模型各有各的坑，按顺序执行即可。转换前先确认：

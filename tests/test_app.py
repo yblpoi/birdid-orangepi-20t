@@ -41,7 +41,7 @@ class _StubImagePipeline:
     def __init__(self) -> None:
         self.seen: list[Any] = []
 
-    def predict(self, image, box_scale=1.0):
+    def predict(self, image, box_scale=1.0, geo=(None, None, None)):
         self.seen.append(image.size)
 
         class _Result:
@@ -116,9 +116,11 @@ def client(monkeypatch, tmp_path):
                 "  cls_input_size: 384",
                 "  seg_conf_threshold: 0.25",
                 "  seg_iou_threshold: 0.45",
-                "  crop_margin_ratio: 0.08",
+                "  crop_margin_ratio: 0.55",
                 "  decode_max_side: 1280",
                 "  max_detections: 5",
+                "  species_map_file: models/species_map.json",
+                "  geo_weight: 1.0",
                 "sound:",
                 "  model_dir: models",
                 "  birdnet_model: birdnet.onnx",

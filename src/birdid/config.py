@@ -59,6 +59,8 @@ class NpuConfig:
     seg_iou_threshold: float
     crop_margin_ratio: float
     max_detections: int
+    species_map_file: str
+    geo_weight: float
 
 
 @dataclass(frozen=True)

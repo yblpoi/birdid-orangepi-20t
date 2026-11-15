@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -16,8 +17,9 @@ from typing import Any
 import numpy as np
 from PIL import Image
 
+from .geo import GeoModel, rerank
 from .runtime import build_runtime
-from .classifier import SpeciesPrediction, SpeciesRegistry, scientific_name
+from .classifier import SpeciesMap, SpeciesPrediction, SpeciesRegistry, load_species_map, scientific_name
 from .detector import Detection, class_name, class_name_zh, decode_predictions, pick_targets
 from .preprocess import crop_with_margin, letterbox, resize_for_classifier
 
@@ -44,17 +46,35 @@ class ImagePipeline:
         self._cls = build_runtime(
             model_dir, npu.cls_model, npu.cls_onnx, npu.device_id
         )
+        self._species_map: SpeciesMap | None = load_species_map(
+            config.resolve(npu.species_map_file) if npu.geo_weight > 0 else None
+        )
+        self._geo: GeoModel | None = None
+        if self._species_map is not None:
+            geo_path = config.resolve(config.sound.model_dir) / config.sound.geomodel_model
+            if geo_path.exists():
+                self._geo = GeoModel(geo_path, config.sound.geomodel_backend)
+            else:
+                logging.warning("未找到 %s，图片链路不做地理重排", geo_path)
 
     def close(self) -> None:
         """释放 NPU 资源。"""
         self._seg.close()
         self._cls.close()
+        if self._geo is not None:
+            self._geo.close()
 
-    def predict(self, image: Image.Image, box_scale: float = 1.0) -> ImageResult:
+    def predict(
+        self,
+        image: Image.Image,
+        box_scale: float = 1.0,
+        geo: tuple = (None, None, None),
+    ) -> ImageResult:
         """对整图执行门禁与分类。
 
         box_scale 把检测框坐标换算回原图：解码时若按 1/2 或 1/4 降采样，
         传 2.0 或 4.0 即可，保证返回的 box 始终是原图像素坐标。
+        geo 为可选的 (纬度, 经度, 周)，三者齐全时用 GeoModel 做地理重排。
         """
         npu = self._config.npu
         source = image.convert("RGB")
@@ -70,7 +90,7 @@ class ImagePipeline:
         )
         birds, others = pick_targets(detections, npu.max_detections)
         if birds:
-            entries = [self._classify_bird(source, det, box_scale) for det in birds]
+            entries = [self._classify_bird(source, det, box_scale, geo) for det in birds]
             return ImageResult(entries=entries, has_bird=True)
         if others:
             entries = [self._describe_non_bird(det, box_scale) for det in others]
@@ -78,16 +98,56 @@ class ImagePipeline:
         return ImageResult(entries=[], has_bird=False)
 
     def _classify_bird(
-        self, image: Image.Image, detection: Detection, box_scale: float = 1.0
+        self,
+        image: Image.Image,
+        detection: Detection,
+        box_scale: float = 1.0,
+        geo: tuple = (None, None, None),
     ) -> dict[str, Any]:
         """裁剪鸟类区域并分类，返回懂鸟结果条目。"""
-        crop = crop_with_margin(image, detection.box, self._config.npu.crop_margin_ratio)
-        tensor = resize_for_classifier(crop, self._config.npu.cls_input_size)
+        npu = self._config.npu
+        crop = crop_with_margin(image, detection.box, npu.crop_margin_ratio)
+        tensor = resize_for_classifier(crop, npu.cls_input_size)
         logits = self._cls.infer(tensor)[0]
-        predictions = self._registry.top_k(logits, self._config.sound.top_k)
+        # 地理重排需要更大的候选池：先取 max_detections 个，重排后再截 top_k。
+        candidates = self._registry.top_k(logits, max(npu.max_detections, self._config.sound.top_k))
+        predictions = self._apply_geo(candidates, geo)[: self._config.sound.top_k]
         items = [self._species_item(prediction) for prediction in predictions]
         box = [round(v * box_scale) for v in detection.box]
         return {"box": box, "list": items}
+
+    def _apply_geo(
+        self, predictions: list[SpeciesPrediction], geo: tuple
+    ) -> list[SpeciesPrediction]:
+        """用 GeoModel 地理先验重排候选；条件不足时原样返回。"""
+        if self._geo is None or self._species_map is None:
+            return predictions
+        latitude, longitude, week = geo
+        if latitude is None or longitude is None or week is None:
+            return predictions
+        weight = self._config.npu.geo_weight
+        if weight <= 0:
+            return predictions
+        spatial = self._geo.scores(latitude, longitude, week)
+        ranked = rerank(
+            [(p.index, p.confidence) for p in predictions],
+            spatial,
+            self._species_map.geomodel_index,
+            weight,
+        )
+        by_index = {p.index: p for p in predictions}
+        adjusted: list[SpeciesPrediction] = []
+        for index, confidence in ranked:
+            base = by_index[index]
+            adjusted.append(
+                SpeciesPrediction(
+                    index=base.index,
+                    species_id=base.species_id,
+                    species_name=base.species_name,
+                    confidence=confidence,
+                )
+            )
+        return adjusted
 
     @staticmethod
     def _species_item(prediction: SpeciesPrediction) -> list[Any]:

@@ -71,3 +71,43 @@ class SpeciesRegistry:
 def scientific_name(raw: str) -> str:
     """把 species_name 的下划线形式转为学名形式，例如 Turdus_merula -> Turdus merula。"""
     return raw.replace("_", " ").strip()
+
+class SpeciesMap:
+    """把 BirdTrace 类序号映射到学名与 GeoModel 行号。
+
+    BirdTrace 的 classes.json 只有英文俗名，而 GeoModel 用学名索引，两者
+    分类体系不同（10,480 vs 14,082），不能按行号对齐。这个映射由
+    scripts/build_species_map.py 离线生成，按归一化俗名把两边接起来；
+    未被 GeoModel 覆盖的类别不出现在映射里，重排时按中性权重处理。
+    """
+
+    def __init__(self, path: Path) -> None:
+        import json as _json
+
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        self._scientific: dict[int, str] = {
+            int(key): str(value) for key, value in (raw.get("species_scientific") or {}).items()
+        }
+        self._geomodel: dict[int, int] = {
+            int(key): int(value) for key, value in (raw.get("geomodel_index") or {}).items()
+        }
+
+    def __len__(self) -> int:
+        return len(self._geomodel)
+
+    def scientific_name(self, index: int) -> str:
+        """类序号对应的学名；未收录时返回空串。"""
+        return self._scientific.get(index, "")
+
+    def geomodel_index(self, index: int) -> int:
+        """类序号对应的 GeoModel 行号；未覆盖时返回 -1。"""
+        return self._geomodel.get(index, -1)
+
+
+def load_species_map(path: Path | None) -> SpeciesMap | None:
+    """按需加载物种映射；路径为空或文件不存在时返回 None（退化为不做地理重排）。"""
+    if path is None:
+        return None
+    if not path.exists():
+        return None
+    return SpeciesMap(path)

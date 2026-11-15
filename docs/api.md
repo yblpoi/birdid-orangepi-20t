@@ -48,13 +48,18 @@
 
 ## 扩展字段（非懂鸟规范）
 
-声音识别支持可选的 `latitude` / `longitude` / `week` 表单字段，用于叠加 GeoModel 地理与季节过滤：
+图片与声音两条链路都支持可选的 `latitude` / `longitude` / `week` 表单字段，用于叠加 GeoModel 地理与季节先验：
 
 - `latitude`：-90 ~ 90，缺失或非法则跳过地理过滤；
 - `longitude`：-180 ~ 180，与 `latitude` 同时生效；
 - `week`：1 ~ 48（缺省按当天换算），非法值按当天换算。
 
-BirdNET 与 GeoModel 的分类体系不同（11,560 类 / 14,082 类），服务按**学名**关联两者，
+图片链路的做法是：先取 top-N（N = `max_detections`）候选，按 `分类置信度 x 地理概率^geo_weight` 重排，
+再截断到 `top_k` 返回；重排后会把分数等比缩放回原来的总和，所以返回的置信度仍然可读。
+92 张带真实拍摄坐标的评测图上，BirdTrace top1 命中率 83.0% -> 96.6%，修好的 12 个样本全部是同属/近缘种混淆，零误伤。
+
+BirdNET 与 GeoModel 的分类体系不同（11,560 类 / 14,082 类），BirdTrace 与 GeoModel 也不同（10,480 类 / 14,082 类），
+服务一律按**学名**关联（BirdTrace 侧由 `scripts/build_species_map.py` 离线生成映射），
 GeoModel 未覆盖的物种按中性权重处理，不做地理惩罚。
 
 ## 声音结果结构

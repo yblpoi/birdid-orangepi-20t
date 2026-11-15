@@ -2,7 +2,7 @@
 server:
   host: 0.0.0.0            # 监听地址
   port: 8080               # 监听端口
-  workers: 2               # uvicorn worker 数
+  workers: 4               # 推理线程池大小：NPU 单卡串行，再多只会排队（实测 4 最优）
   max_upload_image_mb: 2   # 与懂鸟规范一致
   max_upload_sound_mb: 5
   max_image_side: 8192
@@ -31,8 +31,10 @@ npu:
   decode_max_side: 1280         # JPEG 解码时按 1/2 或 1/4 抽样降采样，0 表示不降采样（大图前处理可省一半时间）
   seg_conf_threshold: 0.25
   seg_iou_threshold: 0.45
-  crop_margin_ratio: 0.08         # 裁剪时保留的边框比例（经验证可提升识别效果）
+  crop_margin_ratio: 0.55         # 裁剪时保留的边框比例；92 张实测 0.50~0.60 是平台区，取中值
   max_detections: 5               # 单图最多返回的候选框
+  species_map_file: models/birdtrace_species_map.json   # BirdTrace 类序号 -> 学名/GeoModel 行号
+  geo_weight: 1.0                 # 地理先验指数：0 关闭重排，1 表示直接乘地理概率
 
 sound:
   model_dir: models

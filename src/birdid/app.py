@@ -186,11 +186,12 @@ def _handle_animal(animal_id: str, class_code: str) -> list[Any]:
 def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
     """图片识别分支。"""
     class_code = normalize_class(_text(form.get("class")))
+    geo = _parse_geo(form)
     if "image" in form:
         raw = form["image"]
         if not isinstance(raw, bytes) or not raw:
             return error(CODE_PROCESSING, "empty image")
-        return _accept_image_task(state, raw, class_code)
+        return _accept_image_task(state, raw, class_code, geo)
     url = _text(form.get("url"))
     if not url:
         return error(CODE_PROCESSING, "empty url")
@@ -200,16 +201,20 @@ def _handle_image(state: AppState, form: dict[str, Any]) -> list[Any]:
             data = _download(url, HTTP_TIMEOUT_IMAGE)
         except Exception:  # noqa: BLE001
             return MSG_URL_FAILED
-        return _run_image(state, data)
+        return _run_image(state, data, geo)
 
     return processing(state.executor.submit("image", class_code, work))
 
 
-def _accept_image_task(state: AppState, raw: bytes, class_code: str) -> list[Any]:
+def _accept_image_task(
+    state: AppState, raw: bytes, class_code: str, geo: tuple = (None, None, None)
+) -> list[Any]:
     """受理上传图片并异步识别。"""
     if not _valid_image_size(state, raw):
         return error(CODE_PROCESSING, "image too large")
-    return processing(state.executor.submit("image", class_code, lambda: _run_image(state, raw)))
+    return processing(
+        state.executor.submit("image", class_code, lambda: _run_image(state, raw, geo))
+    )
 
 
 def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
@@ -236,7 +241,7 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
     return processing(state.executor.submit("sound", "B", work))
 
 
-def _run_image(state: AppState, raw: bytes) -> Any:
+def _run_image(state: AppState, raw: bytes, geo: tuple = (None, None, None)) -> Any:
     """解码并执行图片识别，返回懂鸟结果数组或 None。"""
     image = Image.open(io.BytesIO(raw))
     width, height = image.size
@@ -248,7 +253,7 @@ def _run_image(state: AppState, raw: bytes) -> Any:
         return None
     scale = _draft_decode(image, state.config.npu.decode_max_side)
     image.load()
-    result = state.image_pipeline.predict(image, box_scale=scale)
+    result = state.image_pipeline.predict(image, box_scale=scale, geo=geo)
     return result.entries or None
 
 
