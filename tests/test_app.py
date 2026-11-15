@@ -41,7 +41,7 @@ class _StubImagePipeline:
     def __init__(self) -> None:
         self.seen: list[Any] = []
 
-    def predict(self, image):
+    def predict(self, image, box_scale=1.0):
         self.seen.append(image.size)
 
         class _Result:
@@ -117,6 +117,7 @@ def client(monkeypatch, tmp_path):
                 "  seg_conf_threshold: 0.25",
                 "  seg_iou_threshold: 0.45",
                 "  crop_margin_ratio: 0.08",
+                "  decode_max_side: 1280",
                 "  max_detections: 5",
                 "sound:",
                 "  model_dir: models",

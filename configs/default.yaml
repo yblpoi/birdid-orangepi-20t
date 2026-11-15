@@ -28,6 +28,7 @@ npu:
   classes_file: models/birdtrace_classes.json   # BirdTrace 的 10,480 类清单
   seg_input_size: 640
   cls_input_size: 384
+  decode_max_side: 1280         # JPEG 解码时按 1/2 或 1/4 抽样降采样，0 表示不降采样（大图前处理可省一半时间）
   seg_conf_threshold: 0.25
   seg_iou_threshold: 0.45
   crop_margin_ratio: 0.08         # 裁剪时保留的边框比例（经验证可提升识别效果）

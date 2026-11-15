@@ -239,7 +239,6 @@ def _handle_sound(state: AppState, form: dict[str, Any]) -> list[Any]:
 def _run_image(state: AppState, raw: bytes) -> Any:
     """解码并执行图片识别，返回懂鸟结果数组或 None。"""
     image = Image.open(io.BytesIO(raw))
-    image.load()
     width, height = image.size
     server = state.config.server
     longest = max(width, height)
@@ -247,8 +246,27 @@ def _run_image(state: AppState, raw: bytes) -> Any:
     if longest > server.max_image_side or shortest < server.min_image_side:
         # 懂鸟规范要求边长 11..8192 像素；越界按无有效动物处理。
         return None
-    result = state.image_pipeline.predict(image)
+    scale = _draft_decode(image, state.config.npu.decode_max_side)
+    image.load()
+    result = state.image_pipeline.predict(image, box_scale=scale)
     return result.entries or None
+
+
+def _draft_decode(image: Image.Image, max_side: int) -> float:
+    """JPEG 抽样解码，返回原图与解码图的边长比例。
+
+    PIL 的 draft 只对 JPEG 等少数格式生效，会让解码器直接按 1/2、1/4、1/8
+    抽样，省掉大图的整幅解码开销；对 PNG 等格式是空操作，此时比例为 1.0。
+    """
+    if max_side <= 0 or max(image.size) <= max_side:
+        return 1.0
+    before = image.size
+    image.draft("RGB", (max_side, max_side))
+    after = image.size
+    if after[0] <= 0 or after[1] <= 0:
+        return 1.0
+    # draft 按 2 的幂抽样，宽高比例一致；取两者最大值以防边界取整偏差。
+    return max(before[0] / after[0], before[1] / after[1])
 
 
 def _parse_geo(form: dict[str, Any]) -> tuple[float | None, float | None, int | None]:

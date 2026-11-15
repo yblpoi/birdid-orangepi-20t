@@ -54,6 +54,7 @@ class NpuConfig:
     classes_file: str
     seg_input_size: int
     cls_input_size: int
+    decode_max_side: int
     seg_conf_threshold: float
     seg_iou_threshold: float
     crop_margin_ratio: float

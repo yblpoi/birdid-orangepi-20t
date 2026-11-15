@@ -50,8 +50,12 @@ class ImagePipeline:
         self._seg.close()
         self._cls.close()
 
-    def predict(self, image: Image.Image) -> ImageResult:
-        """对整图执行门禁与分类。"""
+    def predict(self, image: Image.Image, box_scale: float = 1.0) -> ImageResult:
+        """对整图执行门禁与分类。
+
+        box_scale 把检测框坐标换算回原图：解码时若按 1/2 或 1/4 降采样，
+        传 2.0 或 4.0 即可，保证返回的 box 始终是原图像素坐标。
+        """
         npu = self._config.npu
         source = image.convert("RGB")
         boxed = letterbox(source, npu.seg_input_size)
@@ -66,21 +70,24 @@ class ImagePipeline:
         )
         birds, others = pick_targets(detections, npu.max_detections)
         if birds:
-            entries = [self._classify_bird(source, det) for det in birds]
+            entries = [self._classify_bird(source, det, box_scale) for det in birds]
             return ImageResult(entries=entries, has_bird=True)
         if others:
-            entries = [self._describe_non_bird(det) for det in others]
+            entries = [self._describe_non_bird(det, box_scale) for det in others]
             return ImageResult(entries=entries, has_bird=False)
         return ImageResult(entries=[], has_bird=False)
 
-    def _classify_bird(self, image: Image.Image, detection: Detection) -> dict[str, Any]:
+    def _classify_bird(
+        self, image: Image.Image, detection: Detection, box_scale: float = 1.0
+    ) -> dict[str, Any]:
         """裁剪鸟类区域并分类，返回懂鸟结果条目。"""
         crop = crop_with_margin(image, detection.box, self._config.npu.crop_margin_ratio)
         tensor = resize_for_classifier(crop, self._config.npu.cls_input_size)
         logits = self._cls.infer(tensor)[0]
         predictions = self._registry.top_k(logits, self._config.sound.top_k)
         items = [self._species_item(prediction) for prediction in predictions]
-        return {"box": [round(v) for v in detection.box], "list": items}
+        box = [round(v * box_scale) for v in detection.box]
+        return {"box": box, "list": items}
 
     @staticmethod
     def _species_item(prediction: SpeciesPrediction) -> list[Any]:
@@ -91,13 +98,15 @@ class ImagePipeline:
         return [confidence, label, prediction.index, "B"]
 
     @staticmethod
-    def _describe_non_bird(detection: Detection) -> dict[str, Any]:
+    def _describe_non_bird(
+        detection: Detection, box_scale: float = 1.0
+    ) -> dict[str, Any]:
         """非鸟类目标：返回具体类别与置信度。"""
         english = class_name(detection.class_id)
         chinese = class_name_zh(detection.class_id)
         label = f"{chinese}|{english}|{english}"
         confidence = round(detection.score * 100.0, 1)
         return {
-            "box": [round(v) for v in detection.box],
+            "box": [round(v * box_scale) for v in detection.box],
             "list": [[confidence, label, detection.class_id, "M"]],
         }
