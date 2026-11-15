@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 import wave
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -62,6 +64,7 @@ class BirdNetModel:
         self._front = None
         self._front_input = ""
         self._back_shape: tuple[int, ...] = ()
+        self._mel_pool: ThreadPoolExecutor | None = None
         import onnxruntime as ort
 
         options = ort.SessionOptions()
@@ -84,9 +87,16 @@ class BirdNetModel:
             self._acl_model = AclModel(om_path)
             self._back_shape = tuple(int(d) for d in self._acl_model.inputs[0].shape)
             self.backend = "hybrid-front-cpu-back-npu"
+            # mel 前端是 CPU 上最重的一段（单窗口约 23 ms），四个窗口串行要 90+ ms。
+            # onnxruntime 的 intra_op 线程对单个窗口帮助有限（实测 1/2/4 线程 27.9/23.4/20.8 ms），
+            # 但把不同窗口分给多个线程跑可近线性扩展（4 线程 27.7 ms 跑完 4 个窗口），
+            # 所以按窗口并行、NPU 主干仍然串行（它本来就单卡串行）。
+            workers = min(4, max(1, (os.cpu_count() or 1)))
+            self._mel_pool = ThreadPoolExecutor(max_workers=workers, thread_name_prefix="mel")
             LOGGER.info(
-                "BirdNET 混合后端：mel 前端 %s 走 CPU，CNN 主干 %s 走 NPU",
+                "BirdNET 混合后端：mel 前端 %s 走 CPU（%d 线程并行），CNN 主干 %s 走 NPU",
                 front_onnx.name,
+                workers,
                 om_path.name,
             )
         elif want_npu and om_path is not None and om_path.exists():
@@ -111,16 +121,31 @@ class BirdNetModel:
         mel = self._front.run(None, {self._front_input: feed})[0]
         return np.asarray(mel, dtype=np.float32)
 
+    def _scores_from_mel(self, mel: np.ndarray) -> np.ndarray:
+        """mel 特征走 NPU 主干，返回类别概率。"""
+        if len(self._back_shape) == 2:
+            feed = mel.reshape(self._back_shape)
+        else:
+            feed = mel.reshape((1,) + self._back_shape)
+        output = self._acl_model.infer(np.ascontiguousarray(feed, dtype=np.float32))[0]
+        return np.asarray(output, dtype=np.float32).reshape(-1)
+
+    def mels(self, windows: list[np.ndarray]) -> list[np.ndarray]:
+        """并行计算多个窗口的 mel 特征。
+
+        onnxruntime 单窗口内部的并行度有限，但窗口之间互不依赖，所以用线程池
+        按窗口并发（每个窗口一次 run），CPU 上的这段耗时随窗口数近线性摊薄。
+        """
+        if self._front is None:
+            return []
+        if self._mel_pool is None or len(windows) <= 1:
+            return [self._mel(window) for window in windows]
+        return list(self._mel_pool.map(self._mel, windows))
+
     def scores(self, samples: np.ndarray) -> np.ndarray:
         """对单个 3 秒窗口返回类别概率向量（模型内已含 sigmoid）。"""
         if self._front is not None and self._acl_model is not None:
-            mel = self._mel(samples)
-            if len(self._back_shape) == 2:
-                feed = mel.reshape(self._back_shape)
-            else:
-                feed = mel.reshape((1,) + self._back_shape)
-            output = self._acl_model.infer(np.ascontiguousarray(feed, dtype=np.float32))[0]
-            return np.asarray(output, dtype=np.float32).reshape(-1)
+            return self._scores_from_mel(self._mel(samples))
         feed = np.ascontiguousarray(samples[None, :], dtype=np.float32)
         if self._acl_model is not None:
             output = self._acl_model.infer(feed)[0]
@@ -129,8 +154,22 @@ class BirdNetModel:
             output = self._session.run(None, {name: feed})[0]
         return np.asarray(output, dtype=np.float32).reshape(-1)
 
+    def score_windows(self, windows: list[np.ndarray]) -> list[np.ndarray]:
+        """对多个窗口依次返回类别概率：mel 并行算完，NPU 主干仍逐窗口串行。"""
+        mels = self.mels(windows)
+        results: list[np.ndarray] = []
+        for index, window in enumerate(windows):
+            if index < len(mels):
+                results.append(self._scores_from_mel(mels[index]))
+            else:
+                results.append(self.scores(window))
+        return results
+
     def close(self) -> None:
         """释放后端资源。"""
+        if self._mel_pool is not None:
+            self._mel_pool.shutdown(wait=False)
+            self._mel_pool = None
         if self._acl_model is not None:
             self._acl_model.close()
             self._acl_model = None
@@ -182,8 +221,7 @@ class SoundPipeline:
             self._config.sound.overlap,
         )
         best: dict[str, float] = {}
-        for window in windows:
-            scores = self._birdnet.scores(window)
+        for scores in self._birdnet.score_windows(windows):
             indices = np.argsort(-scores)[: self._config.sound.top_k * 3]
             for index in indices:
                 label = self._labels.labels[int(index)] if int(index) < len(self._labels) else None
