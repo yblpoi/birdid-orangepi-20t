@@ -103,9 +103,17 @@ def create_app(config_path: str | None = None) -> FastAPI:
     )
 
     @app.get("/healthz")
-    async def healthz() -> dict[str, Any]:
-        """健康检查：返回版本与设备信息。"""
-        return {"status": "ok", "version": __version__}
+    async def healthz(request: Request) -> dict[str, Any]:
+        """健康检查：版本、排队深度与队列上限，便于外部做负载判断。"""
+        state: AppState = request.app.state.birdid
+        pending = state.executor.pending
+        saturating = state.executor.saturated()
+        return {
+            "status": "busy" if saturating else "ok",
+            "version": __version__,
+            "pending": pending,
+            "max_queue": config.server.max_queue,
+        }
 
     @app.post("/dongniao")
     async def dongniao(request: Request):

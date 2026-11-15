@@ -33,6 +33,13 @@ class _StubExecutor:
         payload = [CODE_NO_ANIMALS, "No animals"] if outcome is None else [CODE_OK, outcome]
         return {"state": "done", "payload": payload}
 
+    @property
+    def pending(self) -> int:
+        return 0
+
+    def saturated(self) -> bool:
+        return False
+
     def shutdown(self) -> None:
         return None
 
