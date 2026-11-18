@@ -63,6 +63,9 @@ class NpuConfig:
     species_map_file: str
     geo_weight: float
     area_geo_weight: float
+    # 鸟门禁单独的低阈值：小目标与翻拍图上鸟类分数会掉到 5%~15%，
+    # 用与其它类别相同的 0.25 会直接漏检并掉进非鸟分支。
+    seg_bird_conf_threshold: float = 0.02
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,16 @@ class SoundConfig:
     geomodel_threshold: float
     labels_file: str
     geomodel_labels_file: str
+    # 可选：NPU 侧的 .om 模型名；留空或缺文件时自动回退 CPU。
+    geomodel_om: str = ""
+    birdnet_mel_om: str = ""
+    birdnet_mel_batch_om: str = ""
+    # 可选：把 CNN 主干切成 trunk + head 两段。head 走批量化后，4 窗口只需
+    # 一次前向，比整图逐窗串行快约 1.38 倍（见 sound_pipeline 注释）。
+    birdnet_trunk_om: str = ""
+    # 逗号分隔的多个批量档，例如 "head_b4.om,head_b8.om,head_b12.om"。
+    # 批量越大单位窗口成本越低，按窗口数自动挑最优组合（见 head_batch_plan）。
+    birdnet_head_batch_oms: str = ""
 
 
 

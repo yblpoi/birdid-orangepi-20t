@@ -1,0 +1,26 @@
+[Unit]
+Description=BirdID 鸟类识别服务（昇腾 310B1）
+Documentation=file://@REPO_ROOT@/docs/deploy.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=@SERVICE_USER@
+Group=@SERVICE_GROUP@
+WorkingDirectory=@REPO_ROOT@
+# 密钥只从环境变量读取，安装脚本会在 /etc/birdid/birdid.env 里留一个空模板。
+EnvironmentFile=-/etc/birdid/birdid.env
+Environment=BIRDID_CONFIG=@REPO_ROOT@/configs/default.yaml
+ExecStart=@REPO_ROOT@/scripts/run_server.sh
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+KillMode=mixed
+LimitNOFILE=65535
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=birdid
+
+[Install]
+WantedBy=multi-user.target

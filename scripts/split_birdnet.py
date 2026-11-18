@@ -2,8 +2,10 @@
 
 为什么需要切分：整图含有 STFT 与 ReduceL2，昇腾 CANN 的 ONNX 算子插件里
 没有这两个算子（atc 报 Not_Supported_Operator E13010），整图无法转 .om。
-切分后前端只有 10 个节点留在 CPU（单窗口约 14 ms），CNN 主干 653 个节点
-可以正常转 .om 上 NPU。两段拼接与整图推理结果在 CPU 上逐元素一致。
+切开后 CNN 主干 653 个节点可以正常转 .om 上 NPU，两段拼接与整图推理结果在 CPU 上逐元素一致。
+
+这一步只负责「按 mel 张量切开」；要把前端也搬上 NPU，接着跑
+scripts/build_birdnet_split.py（把 STFT 展开成两次 MatMul，并把主干再切成 trunk + head）。
 
 用法::
 

@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from birdid import app as app_module
 from birdid.protocol import CODE_NO_ANIMALS, CODE_OK, CODE_PROCESSING, CODE_QUOTA
+from birdid.sound import week_of_year
 
 
 class _StubExecutor:
@@ -221,7 +222,7 @@ def test_sound_geo_parameters_forwarded(client: TestClient) -> None:
         files={"sound": ("a.wav", buffer, "audio/wav")},
     )
     assert state.sound_pipeline.calls[0][1] == 39.9
-    assert state.sound_pipeline.calls[0][3] == 42
+    assert state.sound_pipeline.calls[0][3] == week_of_year()
 
 
 def test_api_key_enforced(monkeypatch, client: TestClient) -> None:

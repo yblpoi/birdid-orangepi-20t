@@ -158,18 +158,47 @@ def split_windows(data: np.ndarray, rate: int, window_seconds: float, overlap: f
 
 
 class GeoModelFilter:
-    """GeoModel 后过滤。默认走 CPU（ONNX Runtime），可选 NPU 后端。
+    """GeoModel 后过滤：优先走 NPU（.om），缺少 .om 时回退 CPU（ONNX Runtime）。
 
     BirdNET 与 GeoModel 的分类体系不同（11,560 类 / 14,082 类），行序号不可
     直接对齐，因此这里按学名建立索引；GeoModel 未覆盖的物种按中性权重处理。
     """
 
-    def __init__(self, model_path: Path, geo_labels: LabelTable, backend: str = "cpu") -> None:
-        self.backend = backend
+    def __init__(
+        self,
+        model_path: Path,
+        geo_labels: LabelTable,
+        backend: str = "cpu",
+        om_path: Path | None = None,
+        device_id: int = 0,
+    ) -> None:
+        self.backend = "cpu"
         self.geo_labels = geo_labels
         self._model_path = model_path
         self._index_by_name = geo_labels.index_by_scientific_name()
-        self._session = self._build_session(model_path) if backend == "cpu" else None
+        self._session = None
+        self._acl_model = None
+        if backend != "cpu" and om_path is not None and Path(om_path).exists():
+            from .acl_runner import AclModel
+
+            try:
+                self._acl_model = AclModel(om_path, device_id)
+                self.backend = "npu"
+            except Exception:  # pragma: no cover - 部署环境异常时回退
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "GeoModel 的 .om 加载失败，回退 CPU", exc_info=True
+                )
+                self._acl_model = None
+        if self._acl_model is None:
+            if backend != "cpu":
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "GeoModel 的 NPU 后端不可用（%s），回退 CPU", om_path
+                )
+            self._session = self._build_session(model_path)
 
     @staticmethod
     def _build_session(model_path: Path):
@@ -186,11 +215,19 @@ class GeoModelFilter:
 
     def scores(self, latitude: float, longitude: float, week: int) -> np.ndarray:
         """返回每个物种的出现概率向量。"""
-        if self._session is None:
-            raise RuntimeError("GeoModel 的 NPU 后端尚未配置，请使用 cpu 后端")
         inputs = np.asarray([[latitude, longitude, float(week)]], dtype=np.float32)
-        output = self._session.run(None, {self._session.get_inputs()[0].name: inputs})[0]
+        if self._acl_model is not None:
+            output = self._acl_model.infer(inputs)[0]
+        else:
+            output = self._session.run(None, {self._session.get_inputs()[0].name: inputs})[0]
         return np.asarray(output, dtype=np.float32).reshape(-1)
+
+    def close(self) -> None:
+        """释放模型资源。"""
+        self._session = None
+        if self._acl_model is not None:
+            self._acl_model.close()
+            self._acl_model = None
 
     def rank(
         self,

@@ -53,7 +53,14 @@ class ImagePipeline:
         if self._species_map is not None:
             geo_path = config.resolve(config.sound.model_dir) / config.sound.geomodel_model
             if geo_path.exists():
-                self._geo = GeoModel(geo_path, config.sound.geomodel_backend)
+                geo_om = config.sound.geomodel_om
+                geo_om_path = config.resolve(config.sound.model_dir) / geo_om if geo_om else None
+                self._geo = GeoModel(
+                    geo_path,
+                    config.sound.geomodel_backend,
+                    geo_om_path,
+                    npu.device_id,
+                )
             else:
                 logging.warning("未找到 %s，图片链路不做地理重排", geo_path)
 
@@ -88,6 +95,7 @@ class ImagePipeline:
             npu.seg_conf_threshold,
             npu.seg_iou_threshold,
             npu.max_detections,
+            bird_threshold=npu.seg_bird_conf_threshold,
         )
         birds, others = pick_targets(detections, npu.max_detections)
         if birds:

@@ -22,15 +22,16 @@ storage:
 npu:
   device_id: 0
   model_dir: models               # 相对仓库根目录
-  seg_model: yolo26m-seg.om        # NPU 模型（ATC 生成）
+  seg_model: yolo26n-seg.om        # NPU 模型（ATC 生成）；n 版门禁比 m 版快约 2 倍
   cls_model: fastvit.om            # NPU 模型（ATC 生成）
-  seg_onnx: yolo26m-seg.onnx       # 缺少 .om 时的 CPU 回退，仅用于联调
+  seg_onnx: yolo26n-seg.onnx       # 缺少 .om 时的 CPU 回退，仅用于联调
   cls_onnx: birdtrace.model.onnx
   classes_file: models/birdtrace_classes.json   # BirdTrace 的 10,480 类清单
   seg_input_size: 640
   cls_input_size: 384
   decode_max_side: 1280         # JPEG 解码时按 1/2 或 1/4 抽样降采样，0 表示不降采样（大图前处理可省一半时间）
   seg_conf_threshold: 0.25
+  seg_bird_conf_threshold: 0.02   # 鸟门禁单独的低阈值：小目标/翻拍图上鸟分数会掉到 2%~5%，非鸟图噪声长期低于 0.6%
   seg_iou_threshold: 0.45
   crop_margin_ratio: 0.55         # 裁剪时保留的边框比例；92 张实测 0.50~0.60 是平台区，取中值
   max_detections: 5               # 单图最多返回的候选框
@@ -42,10 +43,17 @@ sound:
   model_dir: models
   birdnet_model: birdnet_v3_fp16.onnx
   birdnet_om: birdnet_v3_fp16_back.om       # CNN 主干（mel 之后）的 OM，缺失时整体回退 CPU
-  birdnet_front_onnx: birdnet_v3_fp16_front.onnx  # mel 前端（STFT/ReduceL2）留在 CPU
+  birdnet_front_onnx: birdnet_v3_fp16_front.onnx  # mel 前端 ONNX，仅在 NPU mel 缺失时用作 CPU 回退
+  birdnet_mel_om: birdnet_v3_fp16_mel.om    # mel 前端（分帧+DFT+mel 投影）OM，单窗口
+  birdnet_mel_batch_om: birdnet_v3_fp16_mel_b4.om  # mel 前端批量 OM，一次算 4 个窗口
+  birdnet_trunk_om: birdnet_v3_fp16_trunk.om  # CNN 主干前半段（卷积+attention 输入），单窗口
+  # 逗号分隔的多个批量档：批量越大单位窗口成本越低，长音频按窗口数自动选组合。
+  # B4/B8/B12 实测 7.2/9.7/14.0 ms；27 窗口时 B12+B8+B8 比只切 B4 快 17 ms。
+  birdnet_head_batch_oms: birdnet_v3_fp16_head_b4.om,birdnet_v3_fp16_head_b8.om,birdnet_v3_fp16_head_b12.om  # 主干尾部分打头，三个批量档
   geomodel_model: geomodel_v3_fp32.onnx
+  geomodel_om: geomodel_v3_fp32.om          # GeoModel 的 OM；缺失时回退 CPU
   birdnet_backend: npu            # npu | cpu（npu 需先转 .om）
-  geomodel_backend: cpu           # cpu（默认） | npu
+  geomodel_backend: npu           # npu | cpu（npu 需先转 .om）
   sample_rate: 32000              # BirdNET v3 的模型采样率
   window_seconds: 3.0
   overlap: 0.0

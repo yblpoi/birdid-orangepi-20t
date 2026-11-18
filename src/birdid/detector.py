@@ -84,8 +84,15 @@ def decode_predictions(
     conf_threshold: float,
     iou_threshold: float,
     max_detections: int,
+    bird_threshold: float | None = None,
 ) -> list[Detection]:
-    """把 YOLO26-seg 的原始输出解码为原图坐标系的检测框。"""
+    """把 YOLO26-seg 的原始输出解码为原图坐标系的检测框。
+
+    bird_threshold 给鸟门禁单独一个（更低的）阈值：小目标、逆光、屏幕翻拍等
+    场景下鸟类的分数会掉到 5%~15%，而 COCO 里其它类别在同一张图上往往同时
+    给出错框。给鸟单独放宽阈值，既能把这类图送进物种分类，又不会让非鸟图
+    误触发——实测非鸟图鸟类分数长期低于 1%。
+    """
     preds = np.asarray(raw, dtype=np.float32)
     if preds.ndim == 3:
         preds = preds[0]
@@ -96,7 +103,12 @@ def decode_predictions(
     confidences = preds[:, 4]
     class_ids = preds[:, 5].round().astype(np.int64)
 
-    keep = confidences >= conf_threshold
+    if bird_threshold is None:
+        keep = confidences >= conf_threshold
+    else:
+        thresholds = np.full(class_ids.shape, conf_threshold, dtype=np.float32)
+        thresholds[class_ids == BIRD_CLASS_ID] = min(bird_threshold, conf_threshold)
+        keep = confidences >= thresholds
     if not np.any(keep):
         return []
     boxes_xyxy = boxes_xyxy[keep]
@@ -108,7 +120,7 @@ def decode_predictions(
     confidences = confidences[order]
     class_ids = class_ids[order]
 
-    selected = nms(boxes_xyxy, confidences, iou_threshold, max_detections)
+    selected = nms(boxes_xyxy, confidences, iou_threshold, max_detections, class_ids)
 
     orig_w, orig_h = original_size
     pad_x, pad_y = letterbox_info.pad_x, letterbox_info.pad_y
@@ -155,11 +167,26 @@ def iou_matrix(boxes: np.ndarray) -> np.ndarray:
     return np.where(union > 0, inter / union, 0.0)
 
 
-def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float, max_detections: int) -> list[int]:
-    """标准非极大值抑制，返回保留下标。"""
+def nms(
+    boxes: np.ndarray,
+    scores: np.ndarray,
+    iou_threshold: float,
+    max_detections: int,
+    class_ids: np.ndarray | None = None,
+) -> list[int]:
+    """标准非极大值抑制，返回保留下标。
+
+    给定 class_ids 时按类别分组抑制：不同类别的框即使大面积重叠也互不压制。
+    门禁为了让小目标鸟过线把鸟的阈值放得很低，同一位置常有置信度更高的人、
+    背景大框，类别无关的抑制会把刚捞回来的鸟框整片压掉。
+    """
     if boxes.shape[0] == 0:
         return []
     ious = iou_matrix(boxes)
+    if class_ids is None:
+        same_class = np.ones(ious.shape, dtype=bool)
+    else:
+        same_class = class_ids[:, None] == class_ids[None, :]
     suppressed = np.zeros(boxes.shape[0], dtype=bool)
     keep: list[int] = []
     for index in range(boxes.shape[0]):
@@ -168,7 +195,7 @@ def nms(boxes: np.ndarray, scores: np.ndarray, iou_threshold: float, max_detecti
         keep.append(index)
         if len(keep) >= max_detections:
             break
-        suppressed |= ious[index] > iou_threshold
+        suppressed |= (ious[index] > iou_threshold) & same_class[index]
         suppressed[index] = False
     return keep
 

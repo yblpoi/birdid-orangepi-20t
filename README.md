@@ -12,7 +12,8 @@
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 BIRDID_MODEL_DIR=models scripts/download_models.sh
-scripts/run_server.sh
+scripts/run_server.sh            # 前台调试
+sudo scripts/install_service.sh  # 装成 systemd 服务：开机自启 + 崩溃拉起
 ```
 
 完整步骤见 [docs/deploy.md](docs/deploy.md)，协议见 [docs/api.md](docs/api.md)，
@@ -33,9 +34,12 @@ docs/     协议、模型、部署文档
 | 环节 | 输入 | NPU 执行 | 同板 CPU 执行 | 加速比 |
 | --- | --- | --- | --- | --- |
 | YOLO26m-seg 检测（裁掉 mask 分支） | 1x3x640x640 | 32 ms | 4577 ms | ~140x |
+| YOLO26n-seg 检测（现默认，同上裁剪） | 1x3x640x640 | 12 ms | — | — |
 | BirdTrace FastViT-MA36 分类 | 1x3x384x384 | 25.7 ms | 1933.9 ms | 75x |
 | BirdNET 主干（mel 之后） | 188x128 | 12.5 ms | 91.5 ms | 7.3x |
-| BirdNET 混合链路（含 CPU mel 前端） | 3 s 音频 | 35.9 ms | 105.4 ms | 2.9x |
+| BirdNET 全 NPU 链路（mel + 主干） | 3 s 音频 | 35.9 ms | 105.4 ms | 2.9x |
+| BirdNET 全 NPU 链路（切分主干 + 批量 head） | 3 s 音频 | 15.8 ms | — | — |
+| 同上，81 s 音频（27 窗口，上传上限） | 27 x 3 s | 305 ms | — | — |
 
 上表是**纯推理**阶段；整条图片链路端到端（解码 + letterbox + 检测 + 裁剪 + 分类）1280x960 单图 98.1 ms，
 其中 NPU 占 57 ms，其余是 PIL 前处理（大图已按 1/2~1/4 抽样解码抵消）。
@@ -44,6 +48,11 @@ docs/     协议、模型、部署文档
 裁剪与分类器缩放的两次重采样合并成一次 `Image.resize(box=...)`，该段 20.0 ms → 13.8 ms、maxdiff 0.0；
 分类器 resize 用双线性替代双三次，快约 40% 且 top1 不降。
 输入降到 576/512 虽然更快（104.3/94.6 ms）但 top1 掉到 82.6%/75.5%，故保持 640。
+
+门禁模型最终换成 n 版：同板同图单次前向 32.4 ms → 12.2 ms（2.65 倍），分类器的输入尺寸与裁剪边距都没动。
+另外 `seg_bird_conf_threshold`（默认 0.02）只对 COCO `bird` 这一类放宽阈值，
+专门救回小目标与翻拍图上掉到 5%~15% 的鸟框；不放宽时这些低分鸟框会被整表阈值丢掉，
+只剩同一位置的 person 框，表现出来就是「照片里有鸟却报成 人」。非鸟图片上 bird 的噪声长期低于 0.6%，不会被误当成鸟。
 
 API 吞吐（`POST /dongniao` 图片，Mac 侧打流，全部 code=1000 零失败）：
 
@@ -61,8 +70,22 @@ API 吞吐（`POST /dongniao` 图片，Mac 侧打流，全部 code=1000 零失�
 打满时新请求立刻返回 `[1007, "server busy"]`，让调用方按限流语义快速退避，而不是拿到一个
 迟迟出不来结果的 resultid。
 
+声音链路同样是单卡串行，但单次推理已经从 35.9 ms 压到 15.8 ms，所以吞吐上限高一个量级
+（12 秒音频，进程内多线程实测）：
+
+| 线程数 | 单次延迟 | 吞吐 |
+| --- | --- | --- |
+| 1 | 51 ms | 19.7 req/s |
+| 2 | 94 ms | 21.2 req/s |
+| 4 | 181 ms | 21.7 req/s |
+| 8 | 361 ms | 21.5 req/s |
+
+吞吐在 21~22 req/s 处封顶，延迟随并发线性增长 —— 与图片链路完全同构，
+再多的 `server.workers` 也换不来吞吐，只会把请求堆在队列里。
+
 精度对齐：BirdTrace 的 NPU 与 CPU logits 最大绝对差 0.2357（logits 量级 -50~-60），top1 与 top5 完全一致；
-BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分值偏移（详见 `docs/models.md`）。
+BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分值偏移（详见 `docs/models.md`）；
+mel 前端与 ORT CPU 的最大绝对差 5.2e-5，12 个窗口的 top1 与整图主干 12/12 一致，批量 head 与逐窗逐位相同。
 
 ## 识别精度（92 张真实照片实测）
 
@@ -104,7 +127,20 @@ BirdNET 主干每个 3 秒窗口的 top1 一致，第 2~4 名存在顺序与分�
 
 ## 状态
 
-图像与声音链路均已端到端跑通：YOLO26m-seg 与 BirdTrace 全量走 NPU；BirdNET 采用「CPU mel 前端 + NPU CNN 主干」混合后端；GeoModel 走 CPU。
+图像与声音链路均已端到端跑通：YOLO26n-seg 门禁与 BirdTrace 分类全量走 NPU；BirdNET 与 GeoModel 也全部迁到 NPU
+（mel 前端折叠成 MatMul 转 .om、主干切成 trunk + 批量 head、GeoModel 走 fp32 .om）。
+单窗口（3 秒）整条链路 15.8 ms，最长可上传的 81 秒音频（27 窗口）305 ms。
+
+换板子或改模型后，用 `scripts/check_npu.py` 一次跑完自检：确认运行期没有残留任何 ORT 会话
+（即真的全在 NPU 上）、按窗口数扫一遍端到端延迟、多线程压测吞吐、长时间连跑看内存与标签漂移。
+
+```bash
+cd /path/to/birdid && source ~/venvs/birdid/bin/activate
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
+PYTHONPATH=src:$PYTHONPATH python scripts/check_npu.py --audio your.wav
+```
+
+`PYTHONPATH` 必须是 `src:$PYTHONPATH`（不能只写 `src`），否则会把 CANN 的 site-packages 顶掉。
 
 ## 许可证
 

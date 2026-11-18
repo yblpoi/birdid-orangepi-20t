@@ -4,7 +4,8 @@
 
 | 文件 | 来源 | 授权 | 备注 |
 | --- | --- | --- | --- |
-| `yolo26m-seg.pt` / `.onnx` / `.om` | https://github.com/ultralytics/assets | AGPL-3.0 | 门禁 + 鸟类区域裁剪 |
+| `yolo26n-seg.pt` / `.onnx` / `.om` | https://github.com/ultralytics/assets | AGPL-3.0 | 门禁 + 鸟类区域裁剪（现默认，快） |
+| `yolo26m-seg.pt` / `.onnx` / `.om` | https://github.com/ultralytics/assets | AGPL-3.0 | 同上，历史默认值（准，慢 2.6 倍） |
 | `model.onnx` → `fastvit.om` | https://github.com/wardens/BirdTrace-FastViT-MA36-10K | CC BY-NC 4.0 | 鸟类物种分类，10480 类 |
 | `birdnet.onnx`（或 TFLite） | https://github.com/birdnet-team/BirdNET-Analyzer | CC BY-NC-SA 4.0 | 鸟鸣识别 |
 | BirdNET 标签表 | 同上 | CC BY-NC-SA 4.0 | 物种编码与中英文名 |
@@ -22,7 +23,32 @@
 | --- | --- | --- |
 | YOLO26m-seg | 直接转换，`--input_shape 'images:1,3,640,640'` | 原始张量最大差 596.8，但解码后的框/分数/类别完全一致 |
 | BirdTrace FastViT | 修 bias → Slice 改 Gather → 剪死节点 → onnxsim 静态折叠 | logits 最大绝对差 0.2357，top1/top5 完全一致 |
-| BirdNET v3 | 切 mel 前端，主干 `ir_version=7` 后转换 | 每个 3 s 窗口 top1 一致，2~4 名有偏移 |
+| BirdNET v3 | 切 mel 前端，主干 `ir_version=7` 后转换（`scripts/split_birdnet.py`） | 每个 3 s 窗口 top1 一致，2~4 名有偏移 |
+| BirdNET mel 前端 | 原始 ONNX 的 STFT 算子无 ATC 插件（`Not_Supported_Operator(E13010): No operator plugin is registered for Op: node_STFT_39, optype: ai.onnx::18::STFT`），故把「加窗 + rfft + 取模平方 + mel 投影」解析展开后折叠成两次 MatMul 再转换 | 与 ORT CPU 前端最大绝对差 5.2e-5，4/4 窗口 top1 相同、top10 重合 100% |
+| BirdNET 切分主干 | trunk / head 按 mel 之后的张量边界切，head 的 Conv 改写成 MatMul 才能批量 | 12 窗口 top1 与整图 12/12 一致；head 批量输出与逐窗逐位相同 |
+
+上面后三个模型的 ONNX 都由 `scripts/build_birdnet_split.py` 从 front/back 两段生成
+（用法见 `docs/deploy.md` 4.3）。脚本会用 float64 展开式自检 mel 前端（最大绝对差 7.3e-05），
+重新生成的 ONNX 与在板 OM 都与仓库里在用的产物逐位相同。
+
+### 鸟鸣链路的批量策略（有收益，与图像链路相反）
+
+图像链路的批推理没有收益（见下），但鸟鸣链路里 **打分头批量化是最大的一笔提速**。
+BirdNET 主干尾部有四个 `[11560, 2048, 1]` 的 Conv，组成最终的打分头；把主干切成
+trunk（卷积主干）与 head（打分头）后，把 head 的 Conv 改写成 MatMul 就能真正批量：
+
+| 环节 | 单窗口 | 4 窗口逐窗 | 4 窗口一次批量 |
+| --- | --- | --- | --- |
+| head（打分头） | 6.5 ms | 23.5 ms | 7.2 ms |
+| mel 前端 | 1.3 ms | 5.7 ms | 4.1 ms |
+| trunk（卷积主干） | 7.6 ms | 30.4 ms | 30.4 ms（批量无收益） |
+
+批量档不止一种，单位窗口成本随批量下降（B4/B8/B12 = 7.2/9.7/14.0 ms），所以按窗口数
+挑最优组合；不足一批时尾部补零，补出来的窗口落在批次末尾直接丢弃，实测输出与逐窗逐位相同。
+27 窗口的 head 成本由此从「7×B4 = 50.6 ms」降到「B12+B8+B8 = 33.4 ms」。
+
+**trunk 批量没有收益**：把 4 份 trunk 展开成一张 4 输入 16 输出的图（trunkU4.om），
+单次 29.9 ms vs 4× 单窗 30.4 ms，只快 1.6%，说明 310B1 上卷积主干已经吃满算力。
 
 ### 批推理没有收益（实测）
 
